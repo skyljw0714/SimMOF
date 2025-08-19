@@ -1,0 +1,79 @@
+;
+;   File /home/users/taeun8991/lammps_auto/Forcefields/GAFF/methanol_GAFF_work/methanol_from_amber.top  was generated
+;   By user: taeun8991 (1029)
+;   On host:anode0 
+;   At date:Wed. July  3 14:32:46 2025 
+;
+;   This is a standalone topology file
+;
+;   Created by:
+;   ParmEd:       convert.py, VERSION4.3.0 
+;   Executable:   convert.py
+;   Library dir:  /usr/local/gromacs/share/gromacs/top
+;   Command line:
+;     /home/users/taeun8991/anaconda3/envs/ambertools/lib/python3.10/site-packages/intermol/convert.py --amb_in methanol.prmtop methanol.inpcrd --lammps --oname methanol_converted
+;
+
+[ defaults ]
+; nbfunc        comb-rule       gen-pairs       fudgeLJ fudgeQQ
+1               2               yes             0.5          0.83333333  
+
+[ atomtypes ]
+; name    at.num    mass    charge ptype  sigma      epsilon
+c3             6  12.010000  0.00000000  A     0.33996695      0.4577296
+oh             8  16.000000  0.00000000  A     0.30664734      0.8803136
+h1             1   1.008000  0.00000000  A      0.2471353      0.0656888
+ho             1   1.008000  0.00000000  A              0              0
+
+
+[ moleculetype ]
+; Name            nrexcl
+UNL          3
+
+[ atoms ]
+;   nr       type  resnr residue  atom   cgnr    charge       mass  typeB    chargeB      massB
+; residue    1 UNL rtp UNL q 0.0
+    1         c3      1    UNL      C      1 0.11670000  12.010000   ; qtot 0.116700
+    2         oh      1    UNL      O      2 -0.59880000  16.000000   ; qtot -0.482100
+    3         h1      1    UNL      H      3 0.02870000   1.008000   ; qtot -0.453400
+    4         h1      1    UNL     H1      4 0.02870000   1.008000   ; qtot -0.424700
+    5         h1      1    UNL     H2      5 0.02870000   1.008000   ; qtot -0.396000
+    6         ho      1    UNL     H3      6 0.39600000   1.008000   ; qtot 0.000000
+
+[ bonds ]
+;    ai     aj funct         c0         c1         c2         c3
+      1      2     1   0.14233 265014.560000
+      1      5     1   0.10969 276646.080000
+      1      3     1   0.10969 276646.080000
+      1      4     1   0.10969 276646.080000
+      2      6     1   0.09730 310787.520000
+
+[ pairs ]
+;    ai     aj funct         c0         c1         c2         c3
+      3      6     1
+      4      6     1
+      5      6     1
+
+[ angles ]
+;    ai     aj     ak funct         c0         c1         c2         c3
+      1      2      6     1   107.2600461 396.643200
+      2      1      5     1   110.2600474 425.931200
+      2      1      3     1   110.2600474 425.931200
+      2      1      4     1   110.2600474 425.931200
+      3      1      5     1   108.4600466 328.025600
+      3      1      4     1   108.4600466 328.025600
+      4      1      5     1   108.4600466 328.025600
+
+[ dihedrals ]
+;    ai     aj     ak     al funct         c0         c1         c2         c3         c4         c5
+      3      1      2      6     1  0.0000000  0.6973333  3
+      4      1      2      6     1  0.0000000  0.6973333  3
+      5      1      2      6     1  0.0000000  0.6973333  3
+
+[ system ]
+; Name
+Generic title
+
+[ molecules ]
+; Compound       #mols
+UNL                  1

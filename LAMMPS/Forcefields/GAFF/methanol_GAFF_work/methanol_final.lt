@@ -1,0 +1,88 @@
+
+  ### LAMMPS commands for initialization
+  ### (These can be overridden later.)
+
+
+write_once("In Init") {
+  bond_style hybrid harmonic
+  angle_style hybrid harmonic
+  dihedral_style hybrid multi/harmonic
+  special_bonds lj 0.0 0.0 0.5 coul 0.0 0.0 0.83333333
+  pair_style lj/cut/coul/long 9.0 9.0
+  kspace_style pppm 1e-8
+  atom_style full
+}
+
+write_once("In Settings") {
+  pair_modify tail yes
+  pair_coeff @atom:type1 @atom:type1 0.1094000   3.3996695
+  pair_coeff @atom:type2 @atom:type2 0.2104000   3.0664734
+  pair_coeff @atom:type3 @atom:type3 0.0157000   2.4713530
+  pair_coeff @atom:type4 @atom:type4 0.0000000   0.0000000
+  pair_modify mix arithmetic
+  bond_coeff @bond:type1 harmonic 3.16700000e+02 1.42330000e+00
+  bond_coeff @bond:type2 harmonic 3.30600000e+02 1.09690000e+00
+  bond_coeff @bond:type3 harmonic 3.30600000e+02 1.09690000e+00
+  bond_coeff @bond:type4 harmonic 3.30600000e+02 1.09690000e+00
+  bond_coeff @bond:type5 harmonic 3.71400000e+02 9.73000000e-01
+}
+
+write_once("In Settings") {
+  angle_coeff @angle:type1 harmonic 4.74000000e+01 1.07260046e+02
+  angle_coeff @angle:type2 harmonic 5.09000000e+01 1.10260047e+02
+  angle_coeff @angle:type3 harmonic 5.09000000e+01 1.10260047e+02
+  angle_coeff @angle:type4 harmonic 5.09000000e+01 1.10260047e+02
+  angle_coeff @angle:type5 harmonic 3.92000000e+01 1.08460047e+02
+  angle_coeff @angle:type6 harmonic 3.92000000e+01 1.08460047e+02
+  angle_coeff @angle:type7 harmonic 3.92000000e+01 1.08460047e+02
+}
+
+write_once("In Settings") {
+  dihedral_coeff @dihedral:type1 multi/harmonic 1.66666659e-01 -4.99999976e-01 0.00000000e+00 6.66666635e-01 0.00000000e+00
+  dihedral_coeff @dihedral:type2 multi/harmonic 1.66666659e-01 -4.99999976e-01 0.00000000e+00 6.66666635e-01 0.00000000e+00
+  dihedral_coeff @dihedral:type3 multi/harmonic 1.66666659e-01 -4.99999976e-01 0.00000000e+00 6.66666635e-01 0.00000000e+00
+}
+
+
+  ### DATA sections
+
+
+write_once("Data Masses") {
+  @atom:type1 12.0100000
+  @atom:type2 16.0000000
+  @atom:type3 1.0080000
+  @atom:type4 1.0080000
+}
+
+write("Data Atoms") {
+  $atom:type1 $mol:m1 @atom:type1 0.11670000 0.0000000 0.0000000 0.0000000
+  $atom:type2 $mol:m1 @atom:type2 -0.59880000 1.4300000 0.0000000 0.0000000
+  $atom:type3_1 $mol:m1 @atom:type3 0.02870000 -0.5400000 0.9300000 0.0000000
+  $atom:type3_2 $mol:m1 @atom:type3 0.02870000 -0.5400000 -0.4650000 0.8900000
+  $atom:type3_3 $mol:m1 @atom:type3 0.02870000 -0.5400000 -0.4650000 -0.8900000
+  $atom:type4 $mol:m1 @atom:type4 0.39600000 1.9300000 0.0000000 0.0000000
+}
+
+write("Data Bonds") {
+  $bond:id1 @bond:type1 $atom:type1 $atom:type2
+  $bond:id2 @bond:type2 $atom:type1 $atom:type3_1
+  $bond:id3 @bond:type3 $atom:type1 $atom:type3_2
+  $bond:id4 @bond:type4 $atom:type1 $atom:type3_3
+  $bond:id5 @bond:type5 $atom:type2 $atom:type4
+}
+
+write("Data Angles") {
+  $angle:id1 @angle:type1 $atom:type1 $atom:type2 $atom:type4
+  $angle:id2 @angle:type2 $atom:type2 $atom:type1 $atom:type3_1
+  $angle:id3 @angle:type3 $atom:type2 $atom:type1 $atom:type3_2
+  $angle:id4 @angle:type4 $atom:type2 $atom:type1 $atom:type3_3
+  $angle:id5 @angle:type5 $atom:type3_1 $atom:type1 $atom:type3_2
+  $angle:id6 @angle:type6 $atom:type3_1 $atom:type1 $atom:type3_3
+  $angle:id7 @angle:type7 $atom:type3_2 $atom:type1 $atom:type3_3
+}
+
+write("Data Dihedrals") {
+  $dihedral:id1 @dihedral:type1 $atom:type3_1 $atom:type1 $atom:type2 $atom:type4
+  $dihedral:id2 @dihedral:type2 $atom:type3_2 $atom:type1 $atom:type2 $atom:type4
+  $dihedral:id3 @dihedral:type3 $atom:type3_3 $atom:type1 $atom:type2 $atom:type4
+}

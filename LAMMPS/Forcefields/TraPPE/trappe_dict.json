@@ -1,0 +1,342 @@
+{
+  "C1A": [
+    "methane"
+  ],
+  "C2A": [
+    "ethane"
+  ],
+  "C3A": [
+    "propane"
+  ],
+  "C4A": [
+    "n-butane"
+  ],
+  "C4B": [
+    "2-methylpropane (isobutane)"
+  ],
+  "C5A": [
+    "n-pentane"
+  ],
+  "C5B": [
+    "2-methylbutane"
+  ],
+  "C5C": [
+    "2",
+    "2-dimethylpropane (neopentane)"
+  ],
+  "C6A": [
+    "n-hexane"
+  ],
+  "C6B": [
+    "2-methylpentane"
+  ],
+  "C6C": [
+    "3-methylpentane"
+  ],
+  "C6D": [
+    "2",
+    "2-dimethylbutane"
+  ],
+  "C6E": [
+    "2",
+    "3-dimethylbutane"
+  ],
+  "C6F": [
+    "benzene"
+  ],
+  "C7A": [
+    "n-heptane",
+    "reordered for V3 method."
+  ],
+  "C7B": [
+    "2-methylhexane"
+  ],
+  "C7C": [
+    "3-methylhexane"
+  ],
+  "C7D": [
+    "3-ethylpentane"
+  ],
+  "C7E": [
+    "2",
+    "2-dimethylpentane"
+  ],
+  "C7F": [
+    "2",
+    "3-dimethylpentane"
+  ],
+  "C7G": [
+    "2",
+    "4-dimethylpentane"
+  ],
+  "C7H": [
+    "3",
+    "3-dimethylpentane"
+  ],
+  "C7I": [
+    "2",
+    "3-trimethylbutane"
+  ],
+  "C8A": [
+    "n-octane"
+  ],
+  "C8B": [
+    "2-methylheptane"
+  ],
+  "C8C": [
+    "3-methylheptane"
+  ],
+  "C8D": [
+    "4-methylheptane"
+  ],
+  "C8E": [
+    "3-ethylhexane"
+  ],
+  "C8F": [
+    "2",
+    "2-dimethylhexane"
+  ],
+  "C8G": [
+    "2",
+    "3-dimethylpentane"
+  ],
+  "C8H": [
+    "2",
+    "4-dimethylhexane"
+  ],
+  "C8I": [
+    "2",
+    "5-dimethylhexane"
+  ],
+  "C8J": [
+    "3",
+    "3-dimethylhexane"
+  ],
+  "C8K": [
+    "3",
+    "4-dimethylhexane"
+  ],
+  "C8L": [
+    "2-methyl-3-ethylpentane"
+  ],
+  "C8M": [
+    "3-methyl-3-ethylpentane"
+  ],
+  "C8N": [
+    "2",
+    "3-trimethylpentane"
+  ],
+  "C8O": [
+    "2",
+    "4-trimethylpentane"
+  ],
+  "C8P": [
+    "2",
+    "3",
+    "3-trimethylpentane"
+  ],
+  "C8Q": [
+    "2",
+    "3",
+    "4-trimethylpentane"
+  ],
+  "C8R": [
+    "2",
+    "3",
+    "3-tetramethylbutane"
+  ],
+  "C1OH": [
+    "methanol"
+  ],
+  "C2OH": [
+    "ethanol"
+  ],
+  "C3OH": [
+    "1-propanol"
+  ],
+  "C4OH": [
+    "1-butanol"
+  ],
+  "C5OH": [
+    "1-pentanol"
+  ],
+  "C6OH": [
+    "1-hexanol"
+  ],
+  "C7OH": [
+    "1-heptanol"
+  ],
+  "C8OH": [
+    "1-octanol"
+  ],
+  "F3O": [
+    "CF3-OH",
+    "perfluoromethanol"
+  ],
+  "F5O": [
+    "CF3-CF2-OH",
+    "perfluoroethanol"
+  ],
+  "F7O": [
+    "CF3-CF2-CF2-OH",
+    "perfluoropropanol"
+  ],
+  "F9O": [
+    "CF3-CF2-CF2-CF2-OH",
+    "perfluorobutanol"
+  ],
+  "F11O": [
+    "CF3-CF2-CF2-CF2-CF2-OH",
+    "perfluoropentanol"
+  ],
+  "F13O": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-OH",
+    "perfluorohexanol"
+  ],
+  "F15O": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-OH",
+    "perfluoroheptanol"
+  ],
+  "F17O": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CF2-OH",
+    "perfluorooctanol"
+  ],
+  "H1F1": [
+    "CF3-CH2-OH",
+    "1:1 FTOH"
+  ],
+  "H1F2": [
+    "CF3-CF2-CH2-OH",
+    "2:1 FTOH"
+  ],
+  "H1F3": [
+    "CF3-CF2-CF2-CH2-OH",
+    "3:1 FTOH"
+  ],
+  "H1F4": [
+    "CF3-CF2-CF2-CF2-CH2-OH",
+    "4:1 FTOH"
+  ],
+  "H1F5": [
+    "CF3-CF2-CF2-CF2-CF2-CH2-OH",
+    "5:1 FTOH"
+  ],
+  "H1F6": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CH2-OH",
+    "6:1 FTOH"
+  ],
+  "H1F7": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CH2-OH",
+    "7:1 FTOH"
+  ],
+  "H1F8": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CH2-OH",
+    "8:1 FTOH"
+  ],
+  "H1F9": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CH2-OH",
+    "9:1 FTOH"
+  ],
+  "H1F0": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CH2-OH",
+    "10:1 FTOH"
+  ],
+  "H2F1": [
+    "CF3-CH2-CH2-OH",
+    "1:2 FTOH"
+  ],
+  "H2F2": [
+    "CF3-CF2-CH2-CH2-OH",
+    "2:2 FTOH"
+  ],
+  "H2F3": [
+    "CF3-CF2-CF2-CH2-CH2-OH",
+    "3:2 FTOH"
+  ],
+  "H2F4": [
+    "CF3-CF2-CF2-CF2-CH2-CH2-OH",
+    "4:2 FTOH"
+  ],
+  "H2F5": [
+    "CF3-CF2-CF2-CF2-CF2-CH2-CH2-OH",
+    "5:2 FTOH"
+  ],
+  "H2F6": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CH2-CH2-OH",
+    "6:2 FTOH"
+  ],
+  "H2F7": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CH2-CH2-OH",
+    "7:2 FTOH"
+  ],
+  "H2F8": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CH2-CH2-OH",
+    "8:2 FTOH"
+  ],
+  "H2F9": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CH2-CH2-OH",
+    "9:2 FTOH"
+  ],
+  "H2F0": [
+    "CF3-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CF2-CH2-CH2-OH",
+    "10:2 FTOH"
+  ],
+  "SPCE": [
+    "SPC/E Water"
+  ],
+  "TIP4": [
+    "water TIP4P",
+    "2005 model"
+  ],
+  "CO2": [
+    "CO2"
+  ],
+  "N2": [
+    "N2"
+  ],
+  "CO": [
+    "CO"
+  ],
+  "NE": [
+    "Neon"
+  ],
+  "AR": [
+    "Argon"
+  ],
+  "KR": [
+    "Krypton"
+  ],
+  "XE": [
+    "Xenon"
+  ],
+  "RN": [
+    "Radon"
+  ],
+  "DME": [
+    "dimethylether"
+  ],
+  "O2": [
+    "oxygen"
+  ],
+  "H2": [
+    "hydrogen"
+  ],
+  "NH3": [
+    "ammonia"
+  ],
+  "ACETALD":[
+    "acetaldehyde", "C2H4O"
+  ],
+  "ACETONE":[
+    "acetone", "C3H6O"
+  ],
+  "ACN":[
+    "acetonitrile"
+  ],
+  "EH":[
+    "methylamine"
+  ],
+  "TOL":[
+    "toluene"
+  ]
+}

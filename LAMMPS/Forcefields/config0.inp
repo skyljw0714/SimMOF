@@ -1,0 +1,8 @@
+tolerance 2.5
+output box_0.pdb
+filetype pdb
+structure C2OH.pdb
+    number 50
+    inside cube  2. 2. 2. 28.
+end structure
+

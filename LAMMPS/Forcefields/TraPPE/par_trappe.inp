@@ -1,0 +1,365 @@
+*
+* Parameter File for TraPPE (Martin and Siepmann) United Atom Force Field
+*
+* Parameters From:
+*
+* "Transferable potentials for phase equilibria. 1. United-atom description of n-alkanes." 
+* Martin, Marcus G., and J. Ilja Siepmann.
+* The Journal of Physical Chemistry B 102.14 (1998): 2569-2577.
+* DOI: 10.1021/jp972543+
+*
+*
+* "Novel configurational-bias Monte Carlo method for branched molecules.
+* Transferable potentials for phase equilibria. 2. United-atom description of branched alkanes."
+* Martin, Marcus G., and J. Ilja Siepmann. 
+* The Journal of Physical Chemistry B 103.21 (1999): 4508-4517.
+* DOI: 10.1021/jp984742e
+*
+*
+
+
+BONDS
+!
+!V(bond) = Kb(b - b0)**2
+!
+!Kb: kcal/mole/A**2
+!b0: A
+!
+! Kb (kcal/mol) = Kb (K) * Boltz. const.; (9999999999 if no stretching)
+!
+!atom type     Kb              b0        description
+CH3 CH3        9999999999      1.540   ! TraPPE I  (ethane)
+CH3 CH2        9999999999      1.540   ! TraPPE I  (ex. n-propane)
+CH2 CH2        9999999999      1.540   ! TraPPE I  (ex. n-butane)
+CH3 CH1        9999999999      1.540   ! TraPPE II (ex. 2-methylpropane) 
+CH3 CT         9999999999      1.540   ! TraPPE II (ex. 2,2-dimethylpropane)
+CH2 CH1        9999999999      1.540   ! TraPPE II (ex. 2-methylbutane)
+CH2 CT         9999999999      1.540   ! TraPPE II (ex. 2,2-dimethylbutane)
+CH1 CH1        9999999999      1.540   ! TraPPE II (ex. 2,3-dimethylbutane) 
+CT  CT         9999999999      1.540   ! (ex. 2,2,3,3-tetramethylbutane)
+OH1  CH3       9999999999      1.430   ! Alcohol
+OH1  CH2       9999999999      1.430   ! Alcohol
+OH1  H         9999999999      0.945   ! Alcohol
+OT   HT        450.0000      1.000   ! SPC bond length 
+! fluorcarbons
+OH1  CF2  	9999999999	  1.4300 ! Alcohol
+OH1  CF3   	9999999999	  1.4300 ! Alcohol
+CH2  CF2   	9999999999	  1.5400
+CH2  CF3   	9999999999	  1.5400
+CF2  CF2   	9999999999	  1.5400
+CF2  CF3   	9999999999	  1.5400
+! CO2
+CO   OC		9999999999	  1.16 ! in CO2
+! N2
+N    COM	9999999999	  0.55 ! N2
+N    N      9999999999    1.1  ! N2
+! testing CO models
+CM   OM		9999999999	  1.1282 ! in CO	
+CM   COM	9999999999	  0.5641 ! in CO Straub
+COM  OM		9999999999	  0.5641 ! in CO Straub
+! benzene
+CHA CHA		9999999999	  1.40 ! benzene
+! TIP4P/2005
+OH   HO    99999999999     0.9572 ! TIP4P/2005 O-H bond length  
+OH   MO    99999999999     0.1546 ! TIP4P/2005 M-O bond length
+! O2
+O   O   9999999999    1.21   ! O2 molecule
+O   COM 9999999999    0.605  ! O2 molecule
+H   H   9999999999    0.74   ! H2 molecule
+! NH3
+NH  H   9999999999    1.0124 ! N-H bond
+N   M   9999999999    0.08  ! N-M bond
+! H2S
+H2S_S  H2S_H   9999999999   1.34     ! S-H (rigid)
+H2S_S  H2S_M   9999999999   0.3      ! S-M (virtual site, rigid)
+! ACETALD
+ALD_CH3  ALD_CH   9999999999   1.52    ! CHx-(CHy=O) bond (rigid)
+ALD_CH   ALD_O    9999999999   1.217   ! CH=O bond (rigid)
+! ACETONE
+ACE_CH3    ACE_CO     9999999999        1.52
+ACE_CO     ACE_O      9999999999        1.229
+! ACN
+ACN_CH3    ACN_C     9999999999     1.54       ! CH3–C
+ACN_C      ACN_N     9999999999     1.157      ! C≡N
+! EH
+EH_N     EH_C     9999999999    1.4480    ! N–C
+EH_N     EH_NH    9999999999    1.01      ! N–H (H1, H2)
+EH_C     EH_M     9999999999    0.5500    ! C–M (M1, M2, M3)
+! TOL
+TOL_C     TOL_CH     9999999999    1.40    ! (C1–C2, C2–C3, ..., C6–C1)
+TOL_C     TOL_CH3    9999999999    1.54    ! (C1–C7)
+
+ANGLES
+!
+!V(angle) = Ktheta(Theta - Theta0)**2
+!
+!Ktheta: kcal/mole/rad**2
+!Theta0: degrees
+!
+! Ktheta (kcal/mol) = Ktheta (K) * Boltz. const.
+!
+!atom types   Ktheta     Theta0 
+CH3 CH2 CH3    31250     114.00  ! TraPPE I  (propane only)
+CH3 CH2 CH2    31250     114.00  ! TraPPE I  (ex. n-butane)
+CH3 CH2 CH1    31250     114.00  ! TraPPE II (ex. 2-methylbutane)
+CH3 CH2 CT     31250     114.00  ! TraPPE II (ex. 2,2-dimethylbutane)
+CH2 CH2 CH2    31250     114.00  ! TraPPE I  (ex. n-pentane)
+CH2 CH2 CH1    31250     114.00  ! TraPPE II (ex. 2-methylpentane)
+CH2 CH2 CT     31250     114.00  ! TraPPE II (ex. 2,2-dimethylpentane)
+CH1 CH2 CH1    31250     114.00  ! TraPPE II (ex. 2,4-dimethylpentane)
+CH1 CH2 CT     31250     114.00  ! TraPPE II (ex. 2-methylpropane)
+CH3 CH1 CH3    31250     112.00  ! TraPPE II (ex. 2-methylpentane)
+CH3 CH1 CH2    31250     112.00  ! TraPPE II (ex. 2-methylbutane)
+CH3 CH1 CH1    31250     112.00  ! TraPPE II (ex. 2-methylbutane)
+CH3 CH1 CT     31250     112.00  ! TraPPE II (ex. 2-methylpentane)
+CH2 CH1 CH2    31250     112.00  ! TraPPE II (ex. 2,3-dimethylbutane)
+CH2 CH1 CH1    31250     112.00  ! TraPPE II (ex. 2,3-dimethylpentane)
+CH2 CH1 CT     31250     112.00  ! TraPPE II (ex. 2,2,3-trimethylbutane)
+CH1 CH1 CH1    31250     112.00  ! TraPPE II (ex. 2,3,4-trimethylpentane)
+CH3 CT  CH3    31250     109.47  ! TraPPE II (ex. 2,2-dimethylpropane)
+CH3 CT  CH2    31250     109.47  ! TraPPE II (ex. 2,2-dimethylbutane)
+CH3 CT  CH1    31250     109.47  ! TraPPE II (ex. 2,2,3-trimethylbutane)
+CH2 CT  CH2    31250     109.47  ! TraPPE II (ex. 3,3-dimethylpentane)
+CH3 CT  CT     31250     109.47  ! (ex. 2,2,3,3-tetramethylbutane)
+OH1  CH2  CH3  25200	 109.47    0.0      0.0 ! alcohol
+OH1  CH2  CH2  25200	 109.47    0.0      0.0 ! alcohol
+H    OH1  CH3  27700     108.5    0.0      0.0 ! alcohol
+H    OH1  CH2  27700     108.5    0.0      0.0 ! alcohol
+!Fluorocarbons
+H    OH1  CF2   27700    108.5   0.0     0.0
+H    OH1  CF3   27700    108.5   0.0     0.0
+OH1  CF2  CF3   31250	 109.5   0.0	  0.0
+OH1  CF2  CF2   31250	 109.5   0.0	  0.0
+OH1  CH2  CF2   31250	 109.5   0.0	  0.0 !from OH1 CF2 CF2
+OH1  CH2  CF3   31250	 109.5   0.0	  0.0 !from OH1 CF2 CF2
+CH2  CH2  CF2   31250	 114.0   0.0	  0.0
+CH2  CF2  CF3   31250	 114.0   0.0	  0.0
+CF2  CF2  CF3   31250	 114.0   0.0	  0.0
+CF2  CF2  CF2   31250    114.0   0.0      0.0
+CH2  CF2  CF2   31250    114.0   0.0      0.0 !from CF2 CF2 CF2
+! CO2
+OC   CO   OC    999999999    180.0   0.0      0.0 ! CO2
+! N2
+N   COM   N     999999999    180.0   0.0      0.0 ! N2
+! O2
+O   COM   O     999999999    180.0   0.0      0.0 ! O2
+! CO
+CM   COM  OM	999999999    180.0   0.0      0.0 ! CO
+! benzene
+CHA CHA CHA     999999999    120.0   0.0      0.0  ! benzene
+! TIP4P/2005
+HO   OH   HO    9999999999999    104.52  ! Fix Angle
+HO   OH   MO    9999999999999     52.26  ! Fix Angle
+! SPCE
+HT  OT  HT   55.0   109.47
+! NH3
+H   NH  H   9999999999      106.8   ! H-N-H
+H   NH  M   9999999999      67.88   ! H-N-M
+! H2S
+H2S_H H2S_S H2S_H   9999999999   92.0     ! H-S-H
+H2S_H H2S_S H2S_M   9999999999   46.0     ! H-S-M
+! ACETALD
+ALD_CH3 ALD_CH ALD_O 31250 121.40   ! C1–C2–O, TraPPE
+! ACETONE
+ACE_CH3    ACE_CO     ACE_CH3     31250        117.20      ! C1–C2–C3
+ACE_CH3    ACE_CO     ACE_O       31250        121.40      ! C1–C2–O
+ACE_CH3    ACE_CO     ACE_O       31250        121.40      ! C3–C2–O
+! ACN
+ACN_CH3    ACN_C     ACN_N     9999999999       180.00      ! CH3–C–N (선형)
+! EH
+EH_NH   EH_N   EH_NH   21955     106.40   ! H1–N–H2
+EH_NH   EH_N   EH_C    31250     112.90   ! H1–N–C
+EH_NH   EH_N   EH_C    31250     112.90   ! H2–N–C
+EH_N    EH_C   EH_M    17624     109.50   ! N–C–M (M1, M2, M3)
+EH_M    EH_C   EH_M    16617     107.80   ! M1–C–M2, M2–C–M3, M1–C–M3
+! TOL
+TOL_C     TOL_CH   TOL_CH   999999999   120.00   ! (1–2–3, 2–3–4, 3–4–5, 4–5–6, 5–6–1, 6–1–2)
+TOL_C     TOL_CH   TOL_CH3  999999999   120.00   ! (2–1–7, 6–1–7)
+
+DIHEDRALS
+!
+!V(dihedral) = Kchi(1 + cos(n(chi) - delta))
+!
+!Kchi: kcal/mole
+!n: multiplicity
+!delta: degrees
+!
+! Kchi (kcal/mol) = Kchi (K) * Boltz. const.
+! Boltzmann = 0.0019872041 kcal / (mol * K)
+!
+! TraPPE Inherits most of its dihedrals from OPLS UA
+! X-CT-CH1-X fitted to QM data in this work
+!
+!atom types         Kchi          n    delta         description
+X   CH2 CH2 X         0.00    0      0.0  ! TraPPE I  (ex. n-butane) 
+X   CH2 CH2 X       355.0     1      0.0  ! ""
+X   CH2 CH2 X       -68.19    2    180.0  ! ""
+X   CH2 CH2 X       791.32    3      0.0  ! ""
+X   CH2 CH1 X      -251.06    0      0.0  ! TraPPE II (ex. 2-MBut)
+X   CH2 CH1 X       428.73    1      0.0  ! ""
+X   CH2 CH1 X      -111.85    2    180.0  ! ""
+X   CH2 CH1 X       441.27    3      0.0  ! ""
+X   CH1 CH1 X      -251.06    0      0.0  ! TraPPE II (ex. 2,3-DMBut)
+X   CH1 CH1 X       428.73    1      0.0  ! ""
+X   CH1 CH1 X      -111.85    2    180.0  ! ""
+X   CH1 CH1 X       441.27    3      0.0  ! ""
+X   CT  CH2 X       461.29    3      0.0  ! TraPPE II (ex. 2,2-DMBut) 
+X   CT  CH1 X      1369.0     3      0.0  ! this work (2,2,3-TriMBut)
+X   CT  CT  X      2950.91    0      0.0  ! this work
+X   CT  CT  X     -2047.06    3      0.0  ! (2,2,3,3-tetramethylbutane)
+X   CT  CT  X       529.25    6    180.0  ! ""
+X   CT  CT  X       150.16   12      0.0  ! ""
+OH1  CH2  CH2  CH2    0.0     0     0.00 ! octanol
+OH1  CH2  CH2  CH2  176.62    1     0.00 ! octanol
+OH1  CH2  CH2  CH2  -53.34    2   180.00 ! octanol
+OH1  CH2  CH2  CH2  769.93    3     0.00 ! octanol
+H    OH1  CH2  CH3  209.82    1     0.00 ! ethanol
+H    OH1  CH2  CH3  -29.17    2   180.00 ! ethanol
+H    OH1  CH2  CH3  187.93    3     0.00 ! ethanol
+H    OH1  CH2  CH2    0.0     0     0.00 ! octanol
+H    OH1  CH2  CH2  209.82    1     0.00 ! octanol
+H    OH1  CH2  CH2  -29.17    2   180.00 ! octanol
+H    OH1  CH2  CH2  187.93    3     0.00 ! octanol
+!fluorocarbons
+H	OH1	CF2	CF2	422.33	1	0
+H	OH1	CF2	CF2	-55.16	2	180
+H	OH1	CF2	CF2	329.93	3	0
+H	OH1	CF2	CF3	422.33	1	0
+H	OH1	CF2	CF3	-55.16	2	180
+H	OH1	CF2	CF3	329.93	3	0
+H	OH1	CH2	CF2    -289.87	1	0
+H	OH1	CH2	CF2	490.06	2	0
+H	OH1	CH2	CF2	452.22	3	0
+H	OH1	CH2	CF2	120.58	4	0
+H	OH1	CH2	CF3    -289.87	1	0
+H	OH1	CH2	CF3	490.06	2	0
+H	OH1	CH2	CF3	452.22	3	0
+H	OH1	CH2	CF3	120.58	4	0
+OH1	CF2	CF2	CF3	 -8.96	1	0
+OH1	CF2	CF2	CF3	 42.07	2	0
+OH1	CF2	CF2	CF3	854.31	3	0
+OH1	CF2	CF2	CF3	 19.73	4	0
+OH1	CF2	CF2	CF2	 -8.96	1	0
+OH1	CF2	CF2	CF2	 42.07	2	0
+OH1	CF2	CF2	CF2	854.31	3	0
+OH1	CF2	CF2	CF2	 19.73	4	0
+OH1	CH2	CF2	CF2	-21.19	1	0
+OH1	CH2	CF2	CF2	-30.40	2	180
+OH1	CH2	CF2	CF2    1181.42	3	0
+OH1	CH2	CF2	CF3	-21.19	1	0
+OH1	CH2	CF2	CF3	-30.40	2	180
+OH1	CH2	CF2	CF3    1181.42	3	0
+OH1	CH2	CH2	CF2	802.73	1	0
+OH1	CH2	CH2	CF2    -543.86	2	180
+OH1	CH2	CH2	CF2	830.11	3	0
+CF2	CF2	CF2	CF3	799.16	1	0
+CF2	CF2	CF2	CF3    -326.15	2	180
+CF2	CF2	CF2	CF3	861.56	3	0
+CF2	CF2	CF2	CF3    -341.76	4	180
+CF2	CF2	CF2	CF2	799.16	1	0
+CF2	CF2	CF2	CF2    -326.15	2	180
+CF2	CF2	CF2	CF2	861.56	3	0
+CF2	CF2	CF2	CF2    -341.76	4	180
+CH2	CF2	CF2	CF2	799.16	1	0
+CH2	CF2	CF2	CF2    -326.15	2	180
+CH2	CF2	CF2	CF2	861.56	3	0
+CH2	CF2	CF2	CF2    -341.76	4	180
+CF2	CF2	CF2	CF2	799.16	1	0
+CF2	CF2	CF2	CF2    -326.15	2	180
+CF2	CF2	CF2	CF2	861.56	3	0
+CF2	CF2	CF2	CF2    -341.76	4	180
+CH2	CF2	CF2	CF2	799.16	1	0
+CH2	CF2	CF2	CF2    -326.15	2	180
+CH2	CF2	CF2	CF2	861.56	3	0
+CH2	CF2	CF2	CF2    -341.76	4	180
+CH2	CF2	CF2	CF3	799.16	1	0
+CH2	CF2	CF2	CF3    -326.15	2	180
+CH2	CF2	CF2	CF3	861.56	3	0
+CH2	CF2	CF2	CF3    -341.76	4	180
+CH2	CH2	CF2	CF2	450.15	1	0
+CH2	CH2	CF2	CF2    -291.33	2	180
+CH2	CH2	CF2	CF2	936.29	3	0
+CH2	CH2	CF2	CF2	-82.23	4	180
+CH2	CH2	CF2	CF3	450.15	1	0
+CH2	CH2	CF2	CF3    -291.33	2	180
+CH2	CH2	CF2	CF3	936.29	3	0
+CH2	CH2	CF2	CF3	-82.23	4	180
+!benzene
+CHA 	CHA	CHA	CHA	999999  0    	0.0 ! benzene
+! EH
+EH_NH  EH_N  EH_C  EH_M   199.0     0    0.0
+EH_NH  EH_N  EH_C  EH_M  -109.0     1    0.0
+EH_NH  EH_N  EH_C  EH_M    12.5     2  180.0
+EH_NH  EH_N  EH_C  EH_M  -102.0     3    0.0
+EH_NH  EH_N  EH_C  EH_M     0.2     4    0.0
+EH_NH  EH_N  EH_C  EH_M     0.0     5    0.0
+
+NONBONDED_MIE
+!
+!V(mie) = 4*eps*((sig_ij/r_ij)^n-(sig_ij/r_ij)^6)
+!
+!atom   eps          sig_ij     n    description
+CH4     148.00       3.730      12   ! TraPPE I
+CH3      98.00       3.750      12   ! TraPPE I
+CH2      46.00       3.950      12   ! TraPPE I 
+CH1      10.00       4.680      12   ! TraPPE II 
+CT        0.50       6.400      12   ! TraPPE II
+OH1	 93.0        3.02	12   ! TraPPE V
+H	  0.0 	     0.0        12   ! TraPPE V	
+OE	55.0	     2.80	12   ! TraPPE VI	
+CF2	 27.5	     4.73	12   ! Zhang and Siepmann JPCB 2005
+CF3	 87.0	     4.36	12
+CHA	 50.5        3.695	12   ! benzene
+!SPC/E Water
+HT	  0.0        0.0        12   ! SPC/E
+OT	 78.2        3.167      12   ! CHECK PARAMETERS!
+!TIP4P/2005
+OH	 93.2	     3.1589	12   ! TIP4P/2005	
+HO	  0.0	     0.0	12
+MO	  0.0	     0.0	12 
+!  CO2
+CO	 27.0	     2.80	12   ! TraPPE CO2
+OC	 79.0	     3.05	12   ! TraPPE CO2
+! N2
+N	 36.0	     3.31	12   ! TraPPE N2
+! CO
+CM	13.1104	     3.83	12   ! Straub CO
+OM	80.1058	     3.12	12   ! Straub CO
+COM	0.0	     0.0	12   ! generic COM site		
+! noble gas parameters from Vrabec
+NE	23.876	     3.048	12   ! Neon form Linnemann et al JCED 2020
+AR	116.79	     3.3952	12   ! Argon
+KR	162.58	     3.6274	12   ! Krypton
+XE	227.55	     3.9011	12   ! Xeon
+RN	292.0	     4.145	12   ! RN from Mick et al.
+! O2
+O   49.0        3.020 12    ! Oxygen
+! H2
+H   0.0         0.0 12      ! H2 atom
+! NH3
+NH   185.0       3.42    12  ! NH3
+! H2S
+H2S_S   122.0   3.60   12    ! S in H2S (TraPPE)
+H2S_H   50.0   2.50   12    ! H in H2S (TraPPE)
+H2S_M   0.0      0.00   12    ! Virtual site
+! ACETALD
+ALD_CH3  98.0   3.75  12
+ALD_CH   54.0   3.52  12
+ALD_O    79.0   3.05  12
+! ACETONE
+ACE_CH3   98.0  3.75    12
+ACE_CO  40.0    3.82    12
+ACE_O   79.0    3.05    12
+! ACN
+ACN_CH3       98.0  3.750   12
+ACN_C         60.0  3.550   12
+ACN_N         60.0  2.950   12
+! EH
+EH_N      111.00   3.34    12
+EH_C        4.00   3.30    12
+EH_NH       0.00   0.00    12
+EH_M       15.30   3.31    12
+! TOL
+TOL_C          21.0            3.88         12
+TOL_CH         50.5            3.695        12
+TOL_CH3        98.0            3.75         12

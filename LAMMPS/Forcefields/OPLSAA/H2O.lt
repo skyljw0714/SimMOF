@@ -1,0 +1,57 @@
+
+  ### LAMMPS commands for initialization
+  ### (These can be overridden later.)
+
+
+write_once("In Init") {
+  atom_style full
+}
+
+write_once("In Init") {
+  atom_style full
+  pair_style lj/cut/coul/long 10.0
+  kspace_style pppm 1.0e-4
+  special_bonds lj/coul 0.0 0.0 0.5
+  bond_style harmonic
+  angle_style harmonic
+}
+
+write_once("In Settings") {
+  pair_coeff @atom:type1 @atom:type1 0.155 3.1536500
+  pair_coeff @atom:type2 @atom:type2 0.000 0.0000000
+  pair_coeff @atom:type3 @atom:type3 0.000 0.0000000
+}
+
+write_once("In Settings") {
+  bond_coeff @bond:type1 553.0000 0.9450
+  bond_coeff @bond:type2 553.0000 0.9450
+}
+
+write_once("In Settings") {
+  angle_coeff @angle:type1 62.500 82.120
+}
+
+
+  ### DATA sections
+
+
+write_once("Data Masses") {
+  @atom:type1 15.999
+  @atom:type2 1.008
+  @atom:type3 1.008
+}
+
+write("Data Atoms") {
+  $atom:type1 $mol:m1 @atom:type1 -0.828553 10.02000 17.96200 20.41400
+  $atom:type2 $mol:m1 @atom:type2 0.414276 10.01000 18.85000 20.89600
+  $atom:type3 $mol:m1 @atom:type3 0.414277 10.87100 17.45700 20.64700
+}
+
+write("Data Bonds") {
+  $bond:id1 @bond:type1 $atom:type2 $atom:type1
+  $bond:id2 @bond:type2 $atom:type3 $atom:type1
+}
+
+write("Data Angles") {
+  $angle:id1 @angle:type1 $atom:type3 $atom:type1 $atom:type2
+}
