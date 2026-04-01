@@ -1,3 +1,0 @@
-@ uio-66.volpo Unitcell_volume: 2159.55   Density: 1.27954   POAV_A^3: 1104.27 POAV_Volume_fraction: 0.51134 POAV_cm^3/g: 0.399627 PONAV_A^3: 0 PONAV_Volume_fraction: 0 PONAV_cm^3/g: 0
-PROBE_OCCUPIABLE_VOL_CALC: filename| density(g/cm3)| probe rad| N points| probe ctr A fract| probe ctr NA fract| A fract| NA fract| narrow fract |ovlp fract.
-PROBE_OCCUPIABLE___RESULT: uio-66.volpo	1.27954	1.2	50000	0.18824	0	0.51134	0	0.0734	0.41526

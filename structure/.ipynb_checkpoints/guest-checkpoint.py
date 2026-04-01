@@ -1,3 +1,5 @@
+from config import working_dir
+import os
 import pubchempy as pcp
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -11,7 +13,8 @@ class GuestLoader:
         self.structure = self.get_structure()
 
     def get_structure(self):
-        return ase.io.read(f"{self.name}.xyz")
+        xyz_path = os.path.join(working_dir, f"{self.name}.xyz")
+        return ase.io.read(xyz_path)
 
     def make_structure_file(self):
         self._download_sdf_from_pubchem()
@@ -19,7 +22,7 @@ class GuestLoader:
 
     def _download_sdf_from_pubchem(self):
         exceptions = ['CO', 'HF']  # 화학식으로 검색이 더 안정적인 경우
-        filename = f"{self.name}.sdf"
+        filename = os.path.join(working_dir, f"{self.name}.sdf")
 
         try:
             if self.name in exceptions:
@@ -40,8 +43,8 @@ class GuestLoader:
             raise RuntimeError(f"Failed to download SDF from PubChem: {e}")
 
     def _optimize_and_convert_to_xyz(self):
-        sdf_path = f"{self.name}.sdf"
-        xyz_path = f"{self.name}.xyz"
+        sdf_path = os.path.join(working_dir, f"{self.name}.sdf")
+        xyz_path = os.path.join(working_dir, f"{self.name}.xyz")
 
         # RDKit로 읽고 3D 좌표 생성
         mol = Chem.MolFromMolFile(sdf_path, removeHs=False)

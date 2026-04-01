@@ -1,26 +1,32 @@
+from config import working_dir
+import os
 import pubchempy as pcp
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from ase import Atoms
-import ase.io
-print(1123123)
+from ase.io import write
+from pathlib import Path
 
 class GuestLoader:
     def __init__(self, name):
         self.name = name 
-        self.make_structure_file()
-        self.structure = self.get_structure()
+        self.atoms = self.get_atoms()
+    
+    def get_guest(self, save_dir):
+        output_path = Path(save_dir) / f"{self.name}.xyz"
+        write(output_path, self.atoms)
+        return
 
-    def get_structure(self):
-        return ase.io.read(f"{self.name}.xyz")
 
-    def make_structure_file(self):
+    def get_atoms(self):
         self._download_sdf_from_pubchem()
-        self._optimize_and_convert_to_xyz()
+        atoms = self._optimize_atoms()
+        return atoms
 
     def _download_sdf_from_pubchem(self):
-        exceptions = ['CO', 'HF']  # 화학식으로 검색이 더 안정적인 경우
-        filename = f"{self.name}.sdf"
+        
+        exceptions = []
+        filename = os.path.join(working_dir, f"{self.name}.sdf")
 
         try:
             if self.name in exceptions:
@@ -34,29 +40,36 @@ class GuestLoader:
                 print("Warning: Multiple compounds found. Using the first one.")
 
             cid = compounds[0].cid
-            pcp.download('SDF', filename, cid, 'cid', overwrite=True, record_type='3d')
-            print(f"[INFO] Downloaded: {filename}")
+            try:
+                pcp.download('SDF', filename, cid, 'cid',
+                            overwrite=True, record_type='3d')
+                print(f"[INFO] Downloaded 3D SDF: {filename}")
+            except Exception as e3d:
+                
+                print(f"[WARN] 3D SDF not available for {self.name} (cid={cid}): {e3d}")
+                pcp.download('SDF', filename, cid, 'cid', overwrite=True)
+                print(f"[INFO] Downloaded fallback SDF (2D/default): {filename}")
 
         except Exception as e:
             raise RuntimeError(f"Failed to download SDF from PubChem: {e}")
 
-    def _optimize_and_convert_to_xyz(self):
-        sdf_path = f"{self.name}.sdf"
-        xyz_path = f"{self.name}.xyz"
+    def _optimize_atoms(self):
+        sdf_path = os.path.join(working_dir, f"{self.name}.sdf")
+        xyz_path = os.path.join(working_dir, f"{self.name}.xyz")
 
-        # RDKit로 읽고 3D 좌표 생성
+        
         mol = Chem.MolFromMolFile(sdf_path, removeHs=False)
         if mol is None:
             raise ValueError("Failed to load molecule from SDF.")
 
-        # 3D 최적화 (필요한 경우)
+        
         if mol.GetNumConformers() == 0:
             print("[INFO] Embedding 3D conformer...")
             mol = Chem.AddHs(mol)
             AllChem.EmbedMolecule(mol)
             AllChem.UFFOptimizeMolecule(mol)
 
-        # XYZ 포맷으로 저장
+        
         conf = mol.GetConformer()
         atoms = []
         for atom in mol.GetAtoms():
@@ -65,5 +78,6 @@ class GuestLoader:
         
         ase_atoms = Atoms(symbols=[a[0] for a in atoms],
                           positions=[a[1] for a in atoms])
-        ase.io.write(xyz_path, ase_atoms)
-        print(f"[INFO] Saved optimized structure to {xyz_path}")
+        
+        return ase_atoms
+

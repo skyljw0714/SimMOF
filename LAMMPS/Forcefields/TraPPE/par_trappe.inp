@@ -49,7 +49,7 @@ CH2  CF3   	9999999999	  1.5400
 CF2  CF2   	9999999999	  1.5400
 CF2  CF3   	9999999999	  1.5400
 ! CO2
-CO   OC		9999999999	  1.16 ! in CO2
+CO   OC		1000.0	  1.16 ! in CO2
 ! N2
 N    COM	9999999999	  0.55 ! N2
 N    N      9999999999    1.1  ! N2
@@ -63,9 +63,8 @@ CHA CHA		9999999999	  1.40 ! benzene
 OH   HO    99999999999     0.9572 ! TIP4P/2005 O-H bond length  
 OH   MO    99999999999     0.1546 ! TIP4P/2005 M-O bond length
 ! O2
-O   O   9999999999    1.21   ! O2 molecule
-O   COM 9999999999    0.605  ! O2 molecule
-H   H   9999999999    0.74   ! H2 molecule
+O    COM   9999999999   0.605   ! O2
+O    O     9999999999   1.21    ! O2
 ! NH3
 NH  H   9999999999    1.0124 ! N-H bond
 N   M   9999999999    0.08  ! N-M bond
@@ -138,7 +137,7 @@ CF2  CF2  CF3   31250	 114.0   0.0	  0.0
 CF2  CF2  CF2   31250    114.0   0.0      0.0
 CH2  CF2  CF2   31250    114.0   0.0      0.0 !from CF2 CF2 CF2
 ! CO2
-OC   CO   OC    999999999    180.0   0.0      0.0 ! CO2
+OC   CO   OC    100.0    180.0   0.0      0.0 ! CO2
 ! N2
 N   COM   N     999999999    180.0   0.0      0.0 ! N2
 ! O2
