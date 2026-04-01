@@ -10,8 +10,9 @@ from tool.utils import (
     run_ase_atom_count,
     run_zeopp,
     run_raspa_henry,
+    run_mlip_binding
 )
-from tool.remote_mlip import run_remote_mlip_be
+
 from config import SCREENING_WORK_ROOT
 
 SCREENING_DEFAULT_HENRY_TEMPERATURE_K = 298.0
@@ -242,7 +243,7 @@ class ToolAgent:
         top_n = len(complex_paths)
 
         print(f"[ToolAgent.mlip] run MLIP for {packmol_dir}")
-        csv_path, okdir_path = run_remote_mlip_be(
+        csv_path, okdir_path = run_mlip_binding(
             host_cif=str(host_cif),
             complex_dir=str(packmol_dir),
             guest_xyz=str(guest_xyz),
@@ -251,7 +252,7 @@ class ToolAgent:
             local_output_dir=str(local_out),
         )
 
-        print(f"[ToolAgent.mlip] remote MLIP done. csv={csv_path}, okdir={okdir_path}")
+        print(f"[ToolAgent.mlip] MLIP done. csv={csv_path}, okdir={okdir_path}")
 
         if not Path(csv_path).exists():
             raise RuntimeError(f"[ToolAgent.mlip] MLIP result CSV does not exist: {csv_path}")

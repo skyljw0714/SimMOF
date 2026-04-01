@@ -175,17 +175,6 @@ COREMOF_PHASE_DIRS = {
     "Ion": _path_from_env("SIMMOF_COREMOF_ION_DIR", CSD_MODIFIED_ROOT / "cifs" / "CR" / "Ion"),
 }
 
-REMOTE_MLIP_GPU_HOST = os.getenv("SIMMOF_REMOTE_MLIP_GPU_HOST", "143.248.130.69")
-REMOTE_MLIP_GPU_USER = os.getenv("SIMMOF_REMOTE_MLIP_GPU_USER", "taeun8991")
-REMOTE_MLIP_GPU_PORT = os.getenv("SIMMOF_REMOTE_MLIP_GPU_PORT", "7722")
-REMOTE_MLIP_REMOTE_DIR = _path_from_env("SIMMOF_REMOTE_MLIP_REMOTE_DIR", "/home/users/taeun8991/mlip_test")
-REMOTE_MLIP_LOCAL_OUTPUT_DIR = _path_from_env("SIMMOF_REMOTE_MLIP_LOCAL_OUTPUT_DIR", SCREENING_WORK_ROOT)
-REMOTE_MLIP_CONDA_INIT = os.getenv(
-    "SIMMOF_REMOTE_MLIP_CONDA_INIT",
-    "source /opt/anaconda3/2023.09/etc/profile.d/conda.sh && conda activate mace",
-)
-REMOTE_MLIP_DEVICE = os.getenv("SIMMOF_REMOTE_MLIP_DEVICE", "cuda:0")
-
 
 def get_csd_api_python_command() -> List[str]:
     if CSD_API_PYTHON:
