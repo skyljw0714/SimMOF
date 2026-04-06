@@ -112,7 +112,7 @@ def generate_lammps_inputs(
     guest_name: str,
     property_name: str,
     query_text: str = "",
-    num_guest: int = 5,
+    num_guest: int = 1,
     job_name: str = "",
     simulation_input: dict = None,
 ):

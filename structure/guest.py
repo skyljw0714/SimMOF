@@ -1,4 +1,3 @@
-from config import working_dir
 import os
 import pubchempy as pcp
 from rdkit import Chem
@@ -10,23 +9,36 @@ from pathlib import Path
 class GuestLoader:
     def __init__(self, name):
         self.name = name 
-        self.atoms = self.get_atoms()
+        self.atoms = None
     
     def get_guest(self, save_dir):
-        output_path = Path(save_dir) / f"{self.name}.xyz"
-        write(output_path, self.atoms)
+        output_dir = Path(save_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        atoms = self.get_atoms(save_dir=output_dir)
+        output_path = output_dir / f"{self.name}.xyz"
+        write(output_path, atoms)
         return
 
 
-    def get_atoms(self):
-        self._download_sdf_from_pubchem()
-        atoms = self._optimize_atoms()
+    def get_atoms(self, save_dir=None):
+        if self.atoms is not None and save_dir is None:
+            return self.atoms
+
+        scratch_dir = Path(save_dir) if save_dir is not None else Path.cwd()
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+
+        self._download_sdf_from_pubchem(scratch_dir)
+        atoms = self._optimize_atoms(scratch_dir)
+
+        if save_dir is None:
+            self.atoms = atoms
+
         return atoms
 
-    def _download_sdf_from_pubchem(self):
+    def _download_sdf_from_pubchem(self, save_dir):
         
         exceptions = []
-        filename = os.path.join(working_dir, f"{self.name}.sdf")
+        filename = str(Path(save_dir) / f"{self.name}.sdf")
 
         try:
             if self.name in exceptions:
@@ -53,9 +65,8 @@ class GuestLoader:
         except Exception as e:
             raise RuntimeError(f"Failed to download SDF from PubChem: {e}")
 
-    def _optimize_atoms(self):
-        sdf_path = os.path.join(working_dir, f"{self.name}.sdf")
-        xyz_path = os.path.join(working_dir, f"{self.name}.xyz")
+    def _optimize_atoms(self, save_dir):
+        sdf_path = str(Path(save_dir) / f"{self.name}.sdf")
 
         
         mol = Chem.MolFromMolFile(sdf_path, removeHs=False)

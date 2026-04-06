@@ -296,6 +296,8 @@ class VASPInputAgent:
                 complex_one = complex_list[0]
                 context["complex_cif_path"] = complex_one
 
+            context["complex_path"] = context.get("complex_path") or context["complex_cif_path"]
+
             system_key = "complex"
             system_role = "complex"
             src_structure_path = complex_one
@@ -317,10 +319,21 @@ class VASPInputAgent:
             context={**context, "reproduce_mode": reproduce_mode, "example_vasp_text": example_vasp_text},
         )
 
+        vasp_system.setdefault("dir", base_dir)
+        vasp_system.setdefault("label", system_label)
+        vasp_system.setdefault("role", system_role)
+
         context["vasp_root"] = vasp_root
         context["vasp_system"] = vasp_system
-        context["vasp_dir"] = vasp_system.get("dir", base_dir)
-        context["vasp_label"] = vasp_system.get("label", system_label)
+        context["vasp_dir"] = vasp_system["dir"]
+        context["vasp_label"] = vasp_system["label"]
+        if vasp_system.get("role"):
+            context["vasp_role"] = vasp_system["role"]
+
+        paths = context.get("paths")
+        if isinstance(paths, dict):
+            paths.setdefault("vasp", {})
+            paths["vasp"]["run_dir"] = vasp_system["dir"]
 
         context.setdefault("results", {})["vasp_input_status"] = "ok"
         return context

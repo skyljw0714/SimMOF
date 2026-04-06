@@ -340,8 +340,13 @@ Return ONLY a JSON array following this schema:
         for dep_plan in getattr(plan, "depends_on_plans", []) or []:
             upstream_plans[dep_plan] = results_by_plan.get(dep_plan, {})
 
-        plan_root = Path(working_dir) / plan.job_name
+        root_dir = Path(working_dir)
+        root_dir.mkdir(parents=True, exist_ok=True)
+
+        plan_root = root_dir / plan.job_name
         plan_root.mkdir(parents=True, exist_ok=True)
+
+        work_dir = plan_root
 
         ctx = {
             "plan_name": plan.job_name,
@@ -357,7 +362,10 @@ Return ONLY a JSON array following this schema:
             "upstream_jobs": upstream_jobs,
             "upstream_plans": upstream_plans,
             "plan_root": str(plan_root),
-            "work_dir": str(plan_root),
+            "work_dir": str(work_dir),
+            "paths": {
+                "root": str(root_dir),
+            },
         }
 
         if ctx["agent"] == "VASPAgent":
@@ -378,6 +386,8 @@ Return ONLY a JSON array following this schema:
             ctx["vasp_dir"] = str(vasp_dir)
             ctx["vasp_label"] = jid
             ctx["vasp_system"] = {"dir": str(vasp_dir), "label": jid}
+            ctx["paths"].setdefault("vasp", {})
+            ctx["paths"]["vasp"]["run_dir"] = str(vasp_dir)
 
         if ctx["agent"] == "AnalysisAgent":
             ctx["interpret_only"] = True

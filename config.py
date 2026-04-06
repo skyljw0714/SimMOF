@@ -108,10 +108,7 @@ AGENT_LLM_MAP = {
     "ScreeningAgent": LLM_STRICT,
 }
 
-WORKING_DIR = _path_from_env(
-    "SIMMOF_WORKING_DIR",
-    _first_existing(PROJECT_ROOT / "working_dir", LEGACY_PROJECT_ROOT / "working_dir", PROJECT_ROOT / "working"),
-)
+WORKING_DIR = _path_from_env("SIMMOF_WORKING_DIR", PROJECT_ROOT / "working_dir")
 SCREENING_WORK_ROOT = _path_from_env("SIMMOF_SCREENING_WORK_ROOT", WORKING_DIR / "screening")
 SCREENING_CIF_ROOT = _path_from_env("SIMMOF_SCREENING_CIF_ROOT", SCREENING_WORK_ROOT / "cifs")
 

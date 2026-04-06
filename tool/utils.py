@@ -10,13 +10,8 @@ import time
 from ase.io import read
 from pathlib import Path
 from collections import OrderedDict
-from mofchecker import MOFChecker
 from ase.optimize import BFGS
 from typing import Dict, Any, Optional
-from input.zeopp_input import ZeoppInputAgent
-from Zeopp.runner import ZeoppRunner
-from output.zeopp_output import ZeoppOutputAgent
-from error.zeopp_error import ZeoppErrorAgent
 from config import LLM_DEFAULT, RASPA_DIR, RASPA_SIMULATE_BIN
 
 RASPA_QSUB_QUEUE = "long"
@@ -25,8 +20,6 @@ SCREENING_DEFAULT_HENRY_TEMPERATURE_K = 298.0
 RASPA_HENRY_NUMBER_OF_CYCLES = 5000
 RASPA_HENRY_WIDOM_INSERTIONS = 10000
 SCREENING_DEFAULT_TOP_N = 100
-
-from tool.parsing import extract_conditions_with_llm
 
 HARD_FAIL_FLAGS = [
     "has_atomic_overlaps",
@@ -45,6 +38,7 @@ REQUIRE_HAS_CARBON = False
 REQUIRE_HAS_HYDROGEN = False
 
 def run_mofchecker(cif_dir: str, okdir: str):
+    from mofchecker import MOFChecker
 
     cif_dir = Path(cif_dir)
     if not cif_dir.is_dir():
@@ -306,6 +300,68 @@ def run_mlip_binding(input_dir, guest_xyz, okdir, device="cpu", top_n=100):
     print(f"[MLIP_BE] Total={len(cif_files)}, Kept={len(kept)}, CSV={output_csv}")
     return [row["path"] for row in kept]
 
+def run_mlip_complex_candidates(
+    complex_cif_paths,
+    okdir,
+    device="cpu",
+    top_n=1,
+):
+    okdir = Path(okdir)
+    okdir.mkdir(parents=True, exist_ok=True)
+
+    results = []
+
+    for i, cif_path in enumerate(complex_cif_paths):
+        cif_path = Path(cif_path)
+        cand_dir = okdir / f"cand_{i:02d}"
+        cand_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            atoms = read(cif_path)
+            atoms.set_pbc(True)
+
+            opt_atoms, energy = optimize_structure(atoms, device=device)
+
+            relaxed_cif = cand_dir / f"{cif_path.stem}_mlip_relaxed.cif"
+            from ase.io import write
+            write(relaxed_cif, opt_atoms, format="cif")
+
+            results.append({
+                "index": i,
+                "input_cif": str(cif_path),
+                "relaxed_cif": str(relaxed_cif),
+                "energy_ev": float(energy),
+                "status": "ok",
+            })
+            print(f"[MLIP_COMPLEX] {cif_path.name}: {energy:.6f} eV")
+
+        except Exception as e:
+            results.append({
+                "index": i,
+                "input_cif": str(cif_path),
+                "relaxed_cif": None,
+                "energy_ev": None,
+                "status": f"failed: {e}",
+            })
+            print(f"[MLIP_COMPLEX] Failed {cif_path.name}: {e}")
+
+    ok_results = [r for r in results if r["status"] == "ok" and r["energy_ev"] is not None]
+    if not ok_results:
+        raise RuntimeError("No successful MLIP-relaxed complex candidates")
+
+    results_sorted = sorted(ok_results, key=lambda x: x["energy_ev"])
+    kept = results_sorted[:min(top_n, len(results_sorted))]
+
+    import json
+    with open(okdir / "mlip_complex_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+
+    return {
+        "all_results": results,
+        "top_results": kept,
+        "best_result": kept[0],
+    }
+    
 def _cmp(val: float, op: str, thr: float) -> bool:
     if op == ">=": return val >= thr
     if op == "<=": return val <= thr
@@ -327,6 +383,12 @@ def run_zeopp(
     base_context: Optional[Dict[str, Any]] = None,
     max_retries: int = 2,
 ) -> list:
+    from input.zeopp_input import ZeoppInputAgent
+    from Zeopp.runner import ZeoppRunner
+    from output.zeopp_output import ZeoppOutputAgent
+    from error.zeopp_error import ZeoppErrorAgent
+    from tool.parsing import extract_conditions_with_llm
+
     base_context = base_context or {}
 
     input_cif_dir = str(input_cif_dir)

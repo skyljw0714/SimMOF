@@ -5,11 +5,35 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
-from langchain.schema import SystemMessage, HumanMessage
 from config import LLM_DEFAULT, AGENT_LLM_MAP
 
+from .agent import ErrorAgent
 
-class VASPErrorAgent:
+
+class VASPErrorAgent(ErrorAgent):
+    def _get_active_system_info(self, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        sys_info = context.get("vasp_system")
+        if not (isinstance(sys_info, dict) and sys_info.get("dir")):
+            vasp_dir = context.get("vasp_dir")
+            vasp_label = context.get("vasp_label")
+            if not vasp_dir or not vasp_label:
+                return None
+            sys_info = {"dir": vasp_dir, "label": vasp_label}
+            if context.get("vasp_role"):
+                sys_info["role"] = context.get("vasp_role")
+
+        sys_info.setdefault("label", context.get("vasp_label") or context.get("mof") or "vasp_job")
+        if context.get("vasp_role") and not sys_info.get("role"):
+            sys_info["role"] = context.get("vasp_role")
+
+        context["vasp_system"] = sys_info
+        context["vasp_dir"] = sys_info["dir"]
+        context["vasp_label"] = sys_info["label"]
+        if sys_info.get("role"):
+            context["vasp_role"] = sys_info["role"]
+
+        return sys_info
+
 
     MAX_RETRY = 3
 
@@ -20,48 +44,20 @@ class VASPErrorAgent:
         wait_interval_sec: int = 30,
         wait_timeout_sec: int = 24 * 3600,
     ):
-        self.llm = llm or AGENT_LLM_MAP.get("VASPErrorAgent", LLM_DEFAULT)
-        self.max_lines = max_lines
+        self._init_error_agent(
+            llm=llm,
+            default_llm=AGENT_LLM_MAP.get("VASPErrorAgent", LLM_DEFAULT),
+            max_lines=max_lines,
+        )
         self.wait_interval_sec = wait_interval_sec
         self.wait_timeout_sec = wait_timeout_sec
 
     
     
     
-    def _clear_flags(self, work_dir: Path) -> None:
-        for fn in ("DONE", "FAILED", "START"):
-            p = work_dir / fn
-            if p.exists():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
-
-    def _is_finished(self, work_dir: Path) -> bool:
-        return (work_dir / "DONE").exists() or (work_dir / "FAILED").exists()
-
-    def _which_flag(self, work_dir: Path) -> Optional[str]:
-        if (work_dir / "DONE").exists():
-            return "DONE"
-        if (work_dir / "FAILED").exists():
-            return "FAILED"
-        return None
-
     
     
     
-    def _read_file(self, path: str) -> str:
-        if not os.path.exists(path):
-            return f"<< {path} not found >>"
-
-        with open(path, "r", errors="ignore") as f:
-            lines = f.readlines()
-
-        if len(lines) > self.max_lines:
-            half = self.max_lines // 2
-            lines = lines[:half] + ["\n...\n"] + lines[-half:]
-        return "".join(lines)
-
     def _read_tail(self, path: str, n_lines: int = 200) -> str:
         if not os.path.exists(path):
             return f"<< {path} not found >>"
@@ -234,160 +230,73 @@ class VASPErrorAgent:
     def _call_llm_for_fix(self, error_source: str, error_text: str, file_dict: Dict[str, str]) -> str:
         system_prompt = (
             "You are a VASP troubleshooting assistant.\n"
-            "Given error excerpts and VASP input files, propose minimal and safe edits.\n"
-            "Prefer editing INCAR/KPOINTS first. Avoid modifying POTCAR content unless absolutely necessary.\n"
-            "Output MUST follow the strict patch format:\n\n"
+            "Given error excerpts and VASP input files, propose the minimal and safest text edits needed to fix the error.\n"
+            "Prefer editing INCAR and KPOINTS first. Avoid modifying POTCAR content unless absolutely necessary.\n"
+            "Do not emit empty assignments like 'IVDW ='.\n"
+            "\n"
+            "Output format (strict):\n"
             "FILE: <filename>\n"
-            "ACTION: <Replace|Remove|AddAfter|AddBefore|Append|Overwrite>\n"
-            "PATTERN: <text or regex (optional)>\n"
-            "CONTENT:\n"
-            "```<text>```\n\n"
-            "Notes:\n"
-            "- Replace: replace first match of PATTERN with CONTENT.\n"
-            "- Remove: remove first match of PATTERN.\n"
-            "- AddAfter/AddBefore: insert CONTENT relative to first match of PATTERN.\n"
-            "- Append: add CONTENT at end of file.\n"
-            "- Overwrite: replace entire file with CONTENT.\n"
-            "- Separate patches with '----' exactly.\n"
-            "- DO NOT output empty assignments like 'IVDW ='.\n"
+            "ACTION: <pattern description>\n"
+            "SUGGESTED CHANGE:\n<payload>\n"
+            "Use ONLY ONE of these action patterns for each fix:\n"
+            "1. After the line:\n```<text>```\nadd:\n```<text to insert>```\n"
+            "2. Before the line:\n```<text>```\nadd:\n```<text to insert>```\n"
+            "3. Remove the line:\n```<exact line to remove>```\n"
+            "4. Replace:\n```<old line(s)>```\nwith:\n```<new line(s)>```\n"
+            "5. Append at end:\n```<text to append>```\n"
+            "6. Overwrite entire file with:\n```<new content>```\n"
+            "For EACH fix, output a separate block as above.\n"
+            "If there are multiple fixes, SEPARATE EACH BLOCK by exactly four dashes `----` on a line by themselves.\n"
+            "Do NOT use any other separator between blocks except `----`.\n"
+            "Return your response STRICTLY as described above.\n"
         )
 
-        user_prompt = f"[ERROR SOURCE]\n{error_source}\n\n[ERROR EXCERPT]\n{error_text}\n\n"
+        user_prompt = f"ERROR source from VASP logs:\n{error_source}\n\nERROR excerpt:\n{error_text}\n\n"
         for fname, content in file_dict.items():
             user_prompt += f"\n----- {fname} -----\n{content}\n"
 
-        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
-        resp = self.llm.invoke(messages)
-        return (resp.content or "").strip()
-
-    
-    
-    
-    def _parse_patch_blocks(self, patch_text: str) -> List[Dict[str, str]]:
-        blocks = []
-        for raw in patch_text.split("----"):
-            b = raw.strip()
-            if not b:
-                continue
-            if "FILE:" not in b or "ACTION:" not in b or "CONTENT:" not in b:
-                continue
-
-            def grab_field(name: str) -> str:
-                m = re.search(rf"{name}:\s*(.*)", b)
-                return (m.group(1).strip() if m else "")
-
-            fname = grab_field("FILE")
-            action = grab_field("ACTION")
-            pattern = grab_field("PATTERN")
-
-            m = re.search(r"CONTENT:\s*```([\s\S]*?)```", b)
-            content = (m.group(1) if m else "").rstrip("\n")
-
-            blocks.append({"file": fname, "action": action, "pattern": pattern, "content": content, "raw": b})
-        return blocks
-
-    def _apply_single_patch(self, filepath: Path, action: str, pattern: str, content: str) -> bool:
-        if not filepath.exists() and action not in ("Overwrite", "Append"):
-            print(f"[PATCH] {filepath} not found (action={action})")
-            return False
-
-        old_text = ""
-        if filepath.exists():
-            with open(filepath, "r", errors="ignore") as f:
-                old_text = f.read()
-
-        new_text = old_text
-        changed = False
-        action = action.strip()
-
-        if action == "Overwrite":
-            new_text = content.rstrip("\n") + "\n"
-            changed = (new_text != old_text)
-
-        elif action == "Append":
-            add = content.rstrip("\n") + "\n"
-            new_text = old_text + ("" if old_text.endswith("\n") else "\n") + add
-            changed = (new_text != old_text)
-
-        elif action in ("Replace", "Remove", "AddAfter", "AddBefore"):
-            if not pattern:
-                print(f"[PATCH] missing PATTERN for action={action} ({filepath.name})")
-                return False
-
-            m = re.search(pattern, old_text, flags=re.MULTILINE)
-            if not m:
-                if pattern in old_text:
-                    idx = old_text.find(pattern)
-                    start, end = idx, idx + len(pattern)
-                else:
-                    print(f"[PATCH] pattern not found in {filepath.name}: {pattern}")
-                    return False
-            else:
-                start, end = m.span()
-
-            if action == "Replace":
-                new_text = old_text[:start] + content + old_text[end:]
-                changed = True
-            elif action == "Remove":
-                new_text = old_text[:start] + old_text[end:]
-                changed = True
-            elif action == "AddAfter":
-                new_text = old_text[:end] + ("\n" if old_text[end:end+1] != "\n" else "") + content + old_text[end:]
-                changed = True
-            elif action == "AddBefore":
-                new_text = old_text[:start] + content + ("\n" if not content.endswith("\n") else "") + old_text[start:]
-                changed = True
-        else:
-            print(f"[PATCH] unknown ACTION={action} ({filepath.name})")
-            return False
-
-        if changed and new_text != old_text:
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-            with open(filepath, "w") as f:
-                f.write(new_text)
-            print(f"[PATCH] Updated: {filepath}")
-            return True
-
-        print(f"[PATCH] No change applied: {filepath}")
-        return False
+        return self._invoke_llm(system_prompt, user_prompt)
 
     def _apply_patches(self, system_dir: Path, patch_text: str) -> Dict[str, Any]:
-        parsed = self._parse_patch_blocks(patch_text)
         applied, skipped = [], []
 
-        for p in parsed:
-            fname, action, pattern, content = p["file"], p["action"], p["pattern"], p["content"]
+        for raw in patch_text.split("----"):
+            block = raw.strip()
+            if not block:
+                continue
+            if "FILE:" not in block:
+                skipped.append({"raw": block, "reason": "missing_file"})
+                continue
+
+            fname = block.split("FILE:", 1)[1].split("\n", 1)[0].strip()
             if not fname:
-                skipped.append(p)
+                skipped.append({"raw": block, "reason": "empty_file"})
                 continue
 
             target = system_dir / fname
 
-            
             if target.name.upper() == "POTCAR":
                 print("[PATCH] Skipping POTCAR modification for safety.")
-                skipped.append(p)
+                skipped.append({"file": fname, "raw": block, "reason": "potcar_forbidden"})
                 continue
 
-            ok = self._apply_single_patch(target, action, pattern, content)
-            (applied if ok else skipped).append(p)
+            before = target.read_text(errors="ignore") if target.exists() else None
+            self.patch_file(str(target), block)
+            after = target.read_text(errors="ignore") if target.exists() else None
+
+            if before != after:
+                applied.append({"file": fname, "raw": block})
+            else:
+                skipped.append({"file": fname, "raw": block, "reason": "no_change"})
 
         return {"applied": applied, "skipped": skipped}
 
-    
-    
-    
     def _run_single(self, context: Dict[str, Any]) -> Dict[str, Any]:
         
-        sys_info = context.get("vasp_system")
+        sys_info = self._get_active_system_info(context)
         if sys_info is None:
-            vasp_dir = context.get("vasp_dir")
-            vasp_label = context.get("vasp_label")
-            if not vasp_dir or not vasp_label:
-                context.setdefault("results", {})["vasp_status"] = "no_system"
-                return context
-            sys_info = {"dir": vasp_dir, "label": vasp_label}
-            context["vasp_system"] = sys_info
+            context.setdefault("results", {})["vasp_status"] = "no_system"
+            return context
 
         system_dir = Path(sys_info["dir"])
         label = sys_info["label"]

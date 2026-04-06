@@ -6,14 +6,19 @@ import time
 from collections import deque
 from typing import Dict, Any
 from config import AGENT_LLM_MAP, LLM_DEFAULT
-from langchain.schema import SystemMessage, HumanMessage
 
-class LAMMPSErrorAgent:
+from .agent import ErrorAgent
+
+
+class LAMMPSErrorAgent(ErrorAgent):
     def __init__(self, llm=None, log_file="log.lammps", input_files=None, max_lines=200):
-        self.llm = llm or AGENT_LLM_MAP.get("LAMMPSErrorAgent", LLM_DEFAULT)
+        self._init_error_agent(
+            llm=llm,
+            default_llm=AGENT_LLM_MAP.get("LAMMPSErrorAgent", LLM_DEFAULT),
+            max_lines=max_lines,
+        )
         self.log_file = log_file
         self.input_files = input_files or ["system.in", "system.in.settings", "system.in.init"]
-        self.max_lines = max_lines
 
     @staticmethod
     def _run_command(cmd: str, work_dir: str):
@@ -30,13 +35,6 @@ class LAMMPSErrorAgent:
         if result.returncode != 0:
             print(f"Command failed with code {result.returncode}")
         return result.returncode
-
-    def read_file(self, filepath):
-        with open(filepath, 'r') as f:
-            lines = f.readlines()
-        if len(lines) > self.max_lines:
-            lines = lines[:self.max_lines // 2] + ['\n...\n'] + lines[-self.max_lines // 2:]
-        return ''.join(lines)
 
     def extract_error(self, log_path, n=10, patterns=None):
         pats = patterns or [r"\bERROR\b"]
@@ -86,118 +84,7 @@ class LAMMPSErrorAgent:
         for fname, content in file_dict.items():
             user_prompt += f"\n----- {fname} -----\n{content}\n"
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ]
-        
-        response = self.llm.invoke(messages)
-        return response.content
-
-    def patch_file(self, fname, block):
-        try:
-            with open(fname, "r", errors="ignore") as f:
-                content = f.read()
-        except FileNotFoundError:
-            print(f"[LAMMPSErrorAgent] {fname} not found, cannot patch.")
-            return
-
-        original_content = content
-        changed = False
-
-        
-        m = re.search(
-            r"ACTION:\s*Overwrite entire file with:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            new_content = m.group(1).strip() + "\n"
-            content = new_content
-            changed = True
-
-        
-        m = re.search(
-            r"ACTION:\s*Append at end:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            add = m.group(1).strip()
-            if not content.endswith("\n"):
-                content += "\n"
-            content += add + "\n"
-            changed = True
-
-        
-        m = re.search(
-            r"ACTION:\s*Remove the line:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            target = m.group(1).strip()
-            if target in content:
-                content = content.replace(target, "", 1)
-                changed = True
-            else:
-                print(f"[LAMMPSErrorAgent] WARNING: remove-target not found in {fname}")
-
-        
-        m = re.search(
-            r"ACTION:\s*Replace:\s*```([\s\S]+?)```\s*with:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            old_block = m.group(1).strip()
-            new_block = m.group(2).strip()
-            if old_block in content:
-                content = content.replace(old_block, new_block, 1)
-                changed = True
-            else:
-                print(f"[LAMMPSErrorAgent] WARNING: old_block not found in {fname}")
-
-        
-        m = re.search(
-            r"ACTION:\s*After the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            target = m.group(1).strip()
-            insert = m.group(2).strip()
-            if target in content:
-                content = content.replace(
-                    target,
-                    target + "\n" + insert,
-                    1,
-                )
-                changed = True
-            else:
-                print(f"[LAMMPSErrorAgent] WARNING: after-target not found in {fname}")
-
-        
-        m = re.search(
-            r"ACTION:\s*Before the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            target = m.group(1).strip()
-            insert = m.group(2).strip()
-            if target in content:
-                content = content.replace(
-                    target,
-                    insert + "\n" + target,
-                    1,
-                )
-                changed = True
-            else:
-                print(f"[LAMMPSErrorAgent] WARNING: before-target not found in {fname}")
-
-        
-        if changed and content != original_content:
-            with open(fname, "w") as f:
-                f.write(content)
-            print(f"{fname} has been automatically modified.")
-        else:
-            print(f"No applicable modifications found in {fname}.")
-
+        return self._invoke_llm(system_prompt, user_prompt)
 
     def run(self, context: dict):
         work_dir = context.get("work_dir")

@@ -2,6 +2,8 @@ import os
 import json
 import shutil
 import ase.io
+import textwrap
+import subprocess
 
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -27,6 +29,7 @@ class VASPAgent:
     def __init__(self, llm=None, debug_dump: bool = True):
         self.llm = llm or LLM_DEFAULT
         self.debug_dump = debug_dump
+        self.mace_env_prefix = "/home/users/skyljw0714/anaconda3/envs/mace"
 
         self.structure = VASPStructureAgent()
         self.input = VASPInputAgent(llm=self.llm)
@@ -67,6 +70,7 @@ class VASPAgent:
             steps=[
                 ("complex_prepare_optimized_mof", self._complex_prepare_optimized_mof),
                 ("complex_structure", self.structure.run_guest_and_complex_from_optimized),
+                ("complex_prescreen", self._prescreen_complex_candidates_with_mlip),
                 ("complex_input", self.input.run),
                 ("complex_submit", self.runner.run),
                 ("complex_error", self.error.run),
@@ -118,8 +122,77 @@ class VASPAgent:
         except Exception as e:
             print(f"[VASPAgent] dump failed {prefix}/{step_agent}: {e}")
 
+    def _get_ctx_vasp_system(self, ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        sys_info = ctx.get("vasp_system")
+        if not (isinstance(sys_info, dict) and sys_info.get("dir")):
+            vasp_dir = self._get_ctx_vasp_dir(ctx)
+            if not vasp_dir:
+                return None
+            sys_info = {"dir": vasp_dir}
+            if ctx.get("vasp_label"):
+                sys_info["label"] = ctx.get("vasp_label")
+            if ctx.get("vasp_role"):
+                sys_info["role"] = ctx.get("vasp_role")
+
+        if ctx.get("vasp_label") and not sys_info.get("label"):
+            sys_info["label"] = ctx.get("vasp_label")
+        if ctx.get("vasp_role") and not sys_info.get("role"):
+            sys_info["role"] = ctx.get("vasp_role")
+
+        ctx["vasp_system"] = sys_info
+        # Backward-compatible alias; vasp_system["dir"] is canonical.
+        ctx["vasp_dir"] = sys_info["dir"]
+        if sys_info.get("label"):
+            ctx["vasp_label"] = sys_info["label"]
+        if sys_info.get("role"):
+            ctx["vasp_role"] = sys_info["role"]
+
+        paths = ctx.get("paths")
+        if isinstance(paths, dict):
+            paths.setdefault("vasp", {})
+            paths["vasp"]["run_dir"] = sys_info["dir"]
+
+        return sys_info
+
+    def _get_ctx_vasp_dir(self, ctx: Dict[str, Any]) -> Optional[str]:
+        sys_info = self._get_ctx_vasp_system(ctx)
+        if isinstance(sys_info, dict):
+            return sys_info.get("dir")
+        return None
+
     
-    
+    def _prescreen_complex_candidates_with_mlip(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        from pathlib import Path
+
+        candidates = ctx.get("complex_cif_paths") or []
+        if not candidates:
+            raise RuntimeError("[VASPAgent] no complex candidates found for MLIP prescreen")
+
+        mlip_dir = Path(ctx["work_dir"]) / "mlip_prescreen"
+
+        prescreen = self._run_mlip_complex_candidates_in_mace_env(
+            complex_cif_paths=candidates,
+            mlip_dir=mlip_dir,
+            device=ctx.get("mlip_device", "cpu"),
+            top_n=1,
+        )
+
+        best = prescreen["best_result"]
+
+        ctx["complex_candidates"] = prescreen["all_results"]
+        ctx["complex_selection_method"] = "mlip_lowest_energy_after_packmol"
+        ctx["mlip_selected_idx"] = best["index"]
+        ctx["mlip_selected_energy_ev"] = best["energy_ev"]
+
+        ctx["complex_cif_path"] = best["relaxed_cif"]
+        ctx["complex_path"] = ctx["complex_cif_path"]
+
+        complex_label = Path(ctx["complex_cif_path"]).stem
+        ctx["vasp_label"] = complex_label
+        ctx.setdefault("vasp_system", {})
+        ctx["vasp_system"]["label"] = complex_label
+
+        return ctx
     
     def _fetch_initial_mof_cif(self, mof: str, target_dir: str) -> str:
         Path(target_dir).mkdir(parents=True, exist_ok=True)
@@ -169,12 +242,16 @@ class VASPAgent:
             raise RuntimeError(f"[VASPAgent] upstream_plans[{binding_plan}] is not a dict")
 
         for job_id, jctx in pres.items():
-            if isinstance(jctx, dict) and jctx.get("vasp_role") == role and jctx.get("vasp_dir"):
-                return jctx["vasp_dir"]
+            if isinstance(jctx, dict) and jctx.get("vasp_role") == role:
+                upstream_vasp_dir = self._get_ctx_vasp_dir(jctx)
+                if upstream_vasp_dir:
+                    return upstream_vasp_dir
 
         for job_id, jctx in pres.items():
-            if isinstance(jctx, dict) and job_id.endswith(f"_{role}") and jctx.get("vasp_dir"):
-                return jctx["vasp_dir"]
+            if isinstance(jctx, dict) and job_id.endswith(f"_{role}"):
+                upstream_vasp_dir = self._get_ctx_vasp_dir(jctx)
+                if upstream_vasp_dir:
+                    return upstream_vasp_dir
 
         raise RuntimeError(
             f"[VASPAgent] cannot find binding_energy upstream vasp_dir for role={role} in plan={binding_plan}"
@@ -368,7 +445,7 @@ class VASPAgent:
             )
 
         mof_ctx = next(iter(upstream_jobs.values()))
-        mof_vasp_dir = mof_ctx.get("vasp_dir")
+        mof_vasp_dir = self._get_ctx_vasp_dir(mof_ctx)
         if not mof_vasp_dir:
             raise RuntimeError("[VASPAgent] upstream mof ctx missing vasp_dir")
 
@@ -383,7 +460,7 @@ class VASPAgent:
     def _run_dos_subrun_from_contcar(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         ctx.setdefault("results", {})
 
-        mof_vasp_dir = ctx.get("vasp_dir")
+        mof_vasp_dir = self._get_ctx_vasp_dir(ctx)
         if not mof_vasp_dir:
             raise RuntimeError("[VASPAgent] DOS requires ctx['vasp_dir'] from mof optimization")
 
@@ -410,7 +487,7 @@ class VASPAgent:
         ctx2 = self.input.run(ctx2)
         self._dump_step(ctx2, "dos_input")
 
-        dos_dir = ctx2.get("vasp_dir")
+        dos_dir = self._get_ctx_vasp_dir(ctx2)
         if dos_dir:
             for fn in ["CHGCAR", "WAVECAR"]:
                 src = os.path.join(mof_vasp_dir, fn)
@@ -429,14 +506,14 @@ class VASPAgent:
 
         ctx.setdefault("results", {})
         ctx["results"]["dos"] = ctx2.get("results", {}).get("dos", {})
-        ctx["dos_vasp_dir"] = ctx2.get("vasp_dir")
+        ctx["dos_vasp_dir"] = self._get_ctx_vasp_dir(ctx2)
 
         return ctx
 
     def _run_bandgap_subrun_from_contcar(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         ctx.setdefault("results", {})
 
-        mof_vasp_dir = ctx.get("vasp_dir")
+        mof_vasp_dir = self._get_ctx_vasp_dir(ctx)
         if not mof_vasp_dir:
             raise RuntimeError("[VASPAgent] bandgap requires ctx['vasp_dir'] from mof optimization")
 
@@ -460,7 +537,7 @@ class VASPAgent:
         ctx2 = self.input.run(ctx2)
         self._dump_step(ctx2, "bandgap_input")
 
-        bandgap_dir = ctx2.get("vasp_dir")
+        bandgap_dir = self._get_ctx_vasp_dir(ctx2)
         if bandgap_dir:
             for fn in ["CHGCAR", "WAVECAR"]:
                 src = os.path.join(mof_vasp_dir, fn)
@@ -479,7 +556,7 @@ class VASPAgent:
 
         ctx.setdefault("results", {})
         ctx["results"]["bandgap"] = ctx2.get("results", {}).get("bandgap", ctx2.get("results", {}))
-        ctx["bandgap_vasp_dir"] = ctx2.get("vasp_dir")
+        ctx["bandgap_vasp_dir"] = self._get_ctx_vasp_dir(ctx2)
 
         return ctx
 
@@ -502,7 +579,7 @@ class VASPAgent:
             ctx = self._run_bandgap_subrun_from_contcar(ctx)
 
         if ctx.get("property") in ["geometry_optimization", "opt", "relax", "optimized_structure"]:
-            vasp_dir = ctx.get("vasp_dir")
+            vasp_dir = self._get_ctx_vasp_dir(ctx)
             if vasp_dir and os.path.exists(os.path.join(vasp_dir, "CONTCAR")):
                 opt_cif = self._make_optimized_mof_cif_from_upstream_dir(ctx, vasp_dir)
                 ctx["results"].setdefault("optimized_structure", {})
@@ -563,3 +640,62 @@ class VASPAgent:
             return self._run_mof_job(ctx)
 
         raise ValueError(f"[VASPAgent] Unknown job_id pattern: {job_id}")
+
+    def _run_mlip_complex_candidates_in_mace_env(
+        self,
+        complex_cif_paths,
+        mlip_dir,
+        device="cpu",
+        top_n=1,
+    ):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        mlip_dir = Path(mlip_dir)
+        mlip_dir.mkdir(parents=True, exist_ok=True)
+
+        result_json = mlip_dir / "_mlip_result.json"
+
+        complex_paths_json = json.dumps([str(p) for p in complex_cif_paths], ensure_ascii=False)
+
+        project_root_lit = json.dumps(project_root)
+        complex_paths_lit = json.dumps(complex_paths_json)
+        mlip_dir_lit = json.dumps(str(mlip_dir))
+        device_lit = json.dumps(str(device))
+        result_json_lit = json.dumps(str(result_json))
+
+        script = textwrap.dedent(f"""
+            import sys, json
+            sys.path.append({project_root_lit})
+
+            from tool.utils import run_mlip_complex_candidates
+
+            complex_cif_paths = json.loads({complex_paths_lit})
+
+            result = run_mlip_complex_candidates(
+                complex_cif_paths=complex_cif_paths,
+                okdir={mlip_dir_lit},
+                device={device_lit},
+                top_n={int(top_n)},
+            )
+
+            with open({result_json_lit}, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+        """)
+
+        proc = subprocess.run(
+            ["conda", "run", "-p", self.mace_env_prefix, "python", "-c", script],
+            capture_output=True,
+            text=True,
+        )
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "[VASPAgent] MLIP prescreen failed in mace env\n"
+                f"stdout:\n{proc.stdout}\n"
+                f"stderr:\n{proc.stderr}"
+            )
+
+        if not result_json.exists():
+            raise RuntimeError(f"[VASPAgent] MLIP result json not found: {result_json}")
+
+        with open(result_json, "r", encoding="utf-8") as f:
+            return json.load(f)

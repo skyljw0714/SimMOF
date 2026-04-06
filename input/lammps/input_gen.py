@@ -450,7 +450,7 @@ The Run Section must follow this structure:
 
 5) MSD computation and long production run
 - Define MSD for the guest group, using the center-of-mass option:
-  * `compute msd_guest guest msd com yes`
+  * `compute msd_guest guest msd`
 - Time-average the MSD and write to file:
   * e.g. `fix msd_out guest ave/time 1000 1 1000 c_msd_guest[4] file msd_guest.dat`
 - Run a long NVE production to accumulate MSD data:

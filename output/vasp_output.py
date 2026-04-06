@@ -308,19 +308,27 @@ class VASPOutputAgent:
 
     def _get_single_system_info(self, context: Dict[str, Any]) -> Dict[str, Any]:
         sys_info = context.get("vasp_system")
-        if isinstance(sys_info, dict) and sys_info.get("dir"):
-            sys_info.setdefault("label", context.get("vasp_label") or context.get("mof") or "vasp_job")
-            sys_info.setdefault("role", context.get("vasp_role"))
-            return sys_info
+        if not (isinstance(sys_info, dict) and sys_info.get("dir")):
+            vasp_dir = context.get("vasp_dir")
+            if not vasp_dir:
+                raise RuntimeError("[VASPOutputAgent] missing vasp_system or vasp_dir in context")
 
-        vasp_dir = context.get("vasp_dir")
-        if not vasp_dir:
-            raise RuntimeError("[VASPOutputAgent] missing vasp_system or vasp_dir in context")
+            sys_info = {
+                "dir": vasp_dir,
+                "label": context.get("vasp_label") or context.get("mof") or "vasp_job",
+                "role": context.get("vasp_role"),
+            }
 
-        label = context.get("vasp_label") or context.get("mof") or "vasp_job"
-        role = context.get("vasp_role")
+        sys_info.setdefault("label", context.get("vasp_label") or context.get("mof") or "vasp_job")
+        sys_info.setdefault("role", context.get("vasp_role"))
 
-        return {"dir": vasp_dir, "label": label, "role": role}
+        context["vasp_system"] = sys_info
+        context["vasp_dir"] = sys_info["dir"]
+        context["vasp_label"] = sys_info["label"]
+        if sys_info.get("role"):
+            context["vasp_role"] = sys_info["role"]
+
+        return sys_info
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         results: Dict[str, Any] = context.setdefault("results", {})

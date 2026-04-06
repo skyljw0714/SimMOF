@@ -7,6 +7,31 @@ class VASPRunner:
     def __init__(self):
         pass
 
+    def _get_active_system_info(self, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        system_info = context.get("vasp_system")
+        if not (isinstance(system_info, dict) and system_info.get("dir")):
+            vasp_dir = context.get("vasp_dir")
+            if not vasp_dir:
+                return None
+            system_info = {
+                "dir": vasp_dir,
+                "label": context.get("vasp_label") or context.get("mof") or "vasp_job",
+            }
+            if context.get("vasp_role"):
+                system_info["role"] = context.get("vasp_role")
+
+        system_info.setdefault("label", context.get("vasp_label") or context.get("mof") or "vasp_job")
+        if context.get("vasp_role") and not system_info.get("role"):
+            system_info["role"] = context.get("vasp_role")
+
+        context["vasp_system"] = system_info
+        context["vasp_dir"] = system_info["dir"]
+        context["vasp_label"] = system_info["label"]
+        if system_info.get("role"):
+            context["vasp_role"] = system_info["role"]
+
+        return system_info
+
     def _submit_single_system(self, system_info: Dict[str, Any]) -> Dict[str, Any]:
         system_dir = system_info["dir"]
         label = system_info["label"]
@@ -64,17 +89,11 @@ class VASPRunner:
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
                 
-        system_info = context.get("vasp_system")
-
-        
+        system_info = self._get_active_system_info(context)
         if system_info is None:
-            vasp_dir = context.get("vasp_dir")
-            vasp_label = context.get("vasp_label")
-            if not vasp_dir or not vasp_label:
-                print("[VASPRunner] ERROR: missing vasp_system (or vasp_dir/vasp_label) in context.")
-                context.setdefault("results", {})["vasp_run_status"] = "failed_no_system"
-                return context
-            system_info = {"dir": vasp_dir, "label": vasp_label}
+            print("[VASPRunner] ERROR: missing vasp_system (or vasp_dir/vasp_label) in context.")
+            context.setdefault("results", {})["vasp_run_status"] = "failed_no_system"
+            return context
         print(system_info)
 
         

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from config import WORKING_DIR
+
 class LAMMPSInputAgent:
     def __init__(self):
         self.lammps_env_prefix = "/home/users/skyljw0714/anaconda3/envs/lammps"
@@ -69,13 +71,23 @@ class LAMMPSInputAgent:
         return result
 
     def run(self, context):
+        paths = context.get("paths") if isinstance(context.get("paths"), dict) else {}
+        # Canonical context path fields are top-level; nested paths fall back only for compatibility.
         work_dir = context.get("work_dir")
+        if work_dir is None:
+            work_dir = paths.get("work_dir")
 
         if work_dir is None:
-            base_root = "/home/users/skyljw0714/MOFScientist/working_dir"
-            work_dir = os.path.join(base_root, context["job_name"])
-            os.makedirs(work_dir, exist_ok=True)
-            context["work_dir"] = work_dir
+            plan_root = context.get("plan_root")
+            if plan_root is None:
+                plan_root = paths.get("plan_root")
+            if plan_root:
+                work_dir = str(Path(plan_root))
+            else:
+                work_dir = str(Path(WORKING_DIR) / context["job_name"])
+
+        os.makedirs(work_dir, exist_ok=True)
+        context["work_dir"] = work_dir
 
         print(f"LAMMPS input will be stored in: {work_dir}")
 
@@ -89,7 +101,7 @@ class LAMMPSInputAgent:
             guest_name=context["guest"],
             prop=context["property"],
             query_text=context.get("query_text", ""),
-            num_guest=context.get("num_guest", 5),
+            num_guest=context.get("num_guest", 1),
             job_name=context.get("job_name", ""),
             simulation_input=sim_in,
         )

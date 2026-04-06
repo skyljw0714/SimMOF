@@ -17,6 +17,30 @@ class ScreeningOutputAgent:
             return []
         return sorted([p.name for p in cif_dir.glob("*.cif")])
 
+    def _resolve_summary_output_path(self, context: Dict[str, Any], results_path: Optional[str]) -> Path:
+        if results_path:
+            return Path(results_path).with_name("screening_summary.json")
+
+        workflow_path = context.get("screening_workflow_path")
+        if workflow_path:
+            return Path(workflow_path).with_name("screening_summary.json")
+
+        paths = context.get("paths") if isinstance(context.get("paths"), dict) else {}
+        work_dir = context.get("work_dir")
+        if not work_dir:
+            work_dir = paths.get("work_dir")
+        if work_dir:
+            return Path(work_dir) / "screening_summary.json"
+
+        plan_root = context.get("plan_root")
+        if not plan_root:
+            plan_root = paths.get("plan_root")
+        if plan_root:
+            return Path(plan_root) / "screening_summary.json"
+
+        job_name = context.get("job_name", "screening_job")
+        return Path.cwd() / job_name / "screening_summary.json"
+
     def _core_params(self, tool: str, params: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(params, dict):
             return {}
@@ -115,14 +139,7 @@ class ScreeningOutputAgent:
         
         if self.save_json:
             try:
-                out_path = None
-                if results_path:
-                    out_path = Path(results_path).with_name("screening_summary.json")
-                else:
-                    
-                    job_name = context.get("job_name", "screening_job")
-                    out_path = Path("/home/users/skyljw0714/MOFScientist/working_dir/screening") / job_name / "screening_summary.json"
-
+                out_path = self._resolve_summary_output_path(context, results_path)
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
                 context["results"]["screening_summary_path"] = str(out_path)

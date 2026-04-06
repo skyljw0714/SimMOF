@@ -134,34 +134,38 @@ class MOFLoader:
                 return 
                 
         if len(self.refcode) == 1:
-            print('### Structure Not in Core MOF... Found structure from CSD ###')
+            print('### Structure Not in Core MOF. Found structure from CSD ###')
             search = TextNumericSearch()
             search.add_all_identifiers(self.refcode[0].upper(), mode='exact')
             search_result = search.search()
-            structure = search_result[0]                
-            writer = CrystalWriter(save_path / Path(f'./{self.name}.cif'))
-            writer.write(structure.crystal)
-            self.cif_path = Path('{}.cif'.format(self.name))
-            return 
-        
+            structure = search_result[0]
+
+            crystal = structure.crystal
+            crystal.molecule = crystal.molecule.heaviest_component
+
+            with CrystalWriter(save_path / Path(f'./{self.name}.cif')) as writer:
+                writer.write(crystal)
+
+            self.cif_path = save_path / Path(f'./{self.name}.cif')
+            return
+
         if len(self.refcode) > 1:
-            print('### Structure Not in Core MOF... Found structure from CSD ###')
-            print('### More than one structure found for this name... there can be an error.. ###')
+            print('### Structure Not in Core MOF. Found structure from CSD ###')
+            print('### More than one structure found for this name. there can be an error. ###')
             print('### Download the first structure found ###')
             search = TextNumericSearch()
             search.add_all_identifiers(self.refcode[0].upper(), mode='exact')
             search_result = search.search()
-            structure = search_result[0]                
-            writer = CrystalWriter(save_path / Path(f'./{self.name}.cif'))
-            writer.write(structure.crystal)
-            self.cif_path = Path('{}.cif'.format(self.name))
-            return 
-        
-            
-                
-        
-            
+            structure = search_result[0]
 
+            crystal = structure.crystal
+            crystal.molecule = crystal.molecule.heaviest_component
+
+            with CrystalWriter(save_path / Path(f'./{self.name}.cif')) as writer:
+                writer.write(crystal)
+
+            self.cif_path = save_path / Path(f'./{self.name}.cif')
+            return
    
 
 def extract_cell_parameters(cif_data):

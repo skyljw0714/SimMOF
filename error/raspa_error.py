@@ -5,19 +5,23 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from langchain.schema import SystemMessage, HumanMessage
 from config import LLM_DEFAULT, AGENT_LLM_MAP, RASPA_DIR as _RASPA_DIR
 from RASPA.runner import RASPARunner
+
+from .agent import ErrorAgent
 
 RASPA_DIR = Path(_RASPA_DIR)
 
 
-class RASPAErrorAgent:
+class RASPAErrorAgent(ErrorAgent):
     MAX_TRIALS = 3  
 
     def __init__(self, llm=None, max_lines: int = 200):
-        self.llm = llm or AGENT_LLM_MAP.get("RASPAErrorAgent", LLM_DEFAULT)
-        self.max_lines = max_lines
+        self._init_error_agent(
+            llm=llm,
+            default_llm=AGENT_LLM_MAP.get("RASPAErrorAgent", LLM_DEFAULT),
+            max_lines=max_lines,
+        )
 
     
 
@@ -25,18 +29,6 @@ class RASPAErrorAgent:
         if (work_dir / "DONE").exists() or (work_dir / "FAILED").exists():
             return False
         return True
-
-    def _is_finished(self, work_dir: Path) -> bool:
-        return (work_dir / "DONE").exists() or (work_dir / "FAILED").exists()
-
-    def _clear_flags(self, work_dir: Path) -> None:
-        for fn in ("START", "DONE", "FAILED"):
-            p = work_dir / fn
-            if p.exists():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
 
     def _gather_error_text(self, context: Dict[str, Any]) -> str:
         work_dir_str = context.get("work_dir", "")
@@ -77,21 +69,6 @@ class RASPAErrorAgent:
         print("[RASPAErrorAgent] DONE and no error strings → OK.")
         return False
 
-
-    def read_file(self, filepath: str) -> str:
-        try:
-            with open(filepath, "r", errors="ignore") as f:
-                lines = f.readlines()
-        except FileNotFoundError:
-            return f"<< {filepath} not found >>\n"
-
-        if len(lines) > self.max_lines:
-            lines = (
-                lines[: self.max_lines // 2]
-                + ["\n...\n"]
-                + lines[-self.max_lines // 2 :]
-            )
-        return "".join(lines)
 
     def _read_cif_header_for_llm(self, filepath: str) -> str:
         try:
@@ -175,118 +152,7 @@ class RASPAErrorAgent:
         for fname, content in file_dict.items():
             user_prompt += f"\n----- {fname} -----\n{content}\n"
 
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ]
-
-        resp = self.llm.invoke(messages)
-        return resp.content
-
-    
-    def patch_file(self, fname: str, block: str):
-        try:
-            with open(fname, "r", errors="ignore") as f:
-                content = f.read()
-        except FileNotFoundError:
-            print(f"{fname} not found, cannot patch.")
-            return
-
-        original_content = content
-        changed = False
-
-        
-        m = re.search(
-            r"ACTION:\s*Overwrite entire file with:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            new_content = m.group(1).strip() + "\n"
-            content = new_content
-            changed = True
-
-        
-        m = re.search(
-            r"ACTION:\s*Append at end:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            add = m.group(1).strip()
-            if not content.endswith("\n"):
-                content += "\n"
-            content += add + "\n"
-            changed = True
-
-        
-        m = re.search(
-            r"ACTION:\s*Remove the line:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            target = m.group(1).strip()
-            if target in content:
-                content = content.replace(target, "", 1)
-                changed = True
-            else:
-                print(f"[patch_file] WARNING: remove-target not found in {fname}")
-
-        
-        m = re.search(
-            r"ACTION:\s*Replace:\s*```([\s\S]+?)```\s*with:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            old_block = m.group(1).strip()
-            new_block = m.group(2).strip()
-            if old_block in content:
-                content = content.replace(old_block, new_block, 1)
-                changed = True
-            else:
-                print(f"[patch_file] WARNING: old_block not found in {fname}")
-
-        
-        m = re.search(
-            r"ACTION:\s*After the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            target = m.group(1).strip()
-            insert = m.group(2).strip()
-            if target in content:
-                content = content.replace(
-                    target,
-                    target + "\n" + insert,
-                    1,
-                )
-                changed = True
-            else:
-                print(f"[patch_file] WARNING: after-target not found in {fname}")
-
-        
-        m = re.search(
-            r"ACTION:\s*Before the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
-            block,
-        )
-        if m:
-            target = m.group(1).strip()
-            insert = m.group(2).strip()
-            if target in content:
-                content = content.replace(
-                    target,
-                    insert + "\n" + target,
-                    1,
-                )
-                changed = True
-            else:
-                print(f"[patch_file] WARNING: before-target not found in {fname}")
-
-        if changed and content != original_content:
-            with open(fname, "w") as f:
-                f.write(content)
-            print(f"{fname} has been automatically modified.")
-        else:
-            print(f"No applicable modifications found in {fname}.")
-
+        return self._invoke_llm(system_prompt, user_prompt)
 
     def _run_core_once(self, context: Dict[str, Any]) -> Dict[str, Any]:
         status = context.get("raspa_status")
