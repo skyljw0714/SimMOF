@@ -19,7 +19,7 @@
   ———
 
   ## Project Structure
-
+```text
   SimMOF/
   ├── main.py
   ├── input/        # Simulator-specific input generation
@@ -34,6 +34,7 @@
   ├── analysis/     # Result aggregation and scientific interpretation
   ├── output/       # Output parsing for each simulator
   └── error/        # Error handling and retry logic
+```
 
   Practical role of each directory:
 
@@ -75,28 +76,28 @@
 
   ### External software
 
-The following external software must be installed and available on the cluster:
+  The following external software must be installed and available on the cluster:
 
-- LAMMPS
-- VASP
-- Zeo++
-- RASPA
-- Packmol
-- CCDC / CSD Python API
+  - LAMMPS
+  - VASP
+  - Zeo++
+  - RASPA
+  - Packmol
+  - CCDC / CSD Python API
 
-### CCDC / CSD Python API
+  ### CCDC / CSD Python API
 
-`structure/agent.py` depends on the CCDC Python API, so a working CCDC installation is required for structure-agent functionality.
+  `structure/agent.py` depends on the CCDC Python API, so a working CCDC installation is required for structure-agent functionality.
 
-Download the CCDC software from the official CSDS Downloads page:
+  Download the CCDC software from the official CSDS Downloads page:
 
-https://www.ccdc.cam.ac.uk/support-and-resources/csdsdownloads/
+  https://www.ccdc.cam.ac.uk/support-and-resources/csdsdownloads/
 
-Notes:
-- You need a valid CCDC customer number and activation key to obtain the latest CSD Suite installers.
-- The CSD Python API is installed with the CSD installation, and CCDC also states that it can be installed manually using provided conda packages.
-- Make sure the CCDC Python API is available in the Python environment used to run SimMOF.
-- If CCDC is not installed, structure-agent features that rely on `ccdc` will not work.
+  Notes:
+  - You need a valid CCDC customer number and activation key to obtain the latest CSD Suite installers.
+  - The CSD Python API is installed with the CSD installation, and CCDC also states that it can be installed manually using provided conda packages.
+  - Make sure the CCDC Python API is available in the Python environment used to run SimMOF.
+  - If CCDC is not installed, structure-agent features that rely on `ccdc` will not work.
 
   ———
 
