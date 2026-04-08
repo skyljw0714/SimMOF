@@ -1,6 +1,5 @@
 import os
 import re
-import subprocess
 import numpy as np
 import math
 import json

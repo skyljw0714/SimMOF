@@ -16,6 +16,7 @@ DEFAULT_VASP_POTENTIAL_DIR = Path("/opt/vasp/PseudoPotential/potpaw_PBE.54")
 DEFAULT_VASP_EXECUTABLE = "/opt/vasp/5.4.1/vasp_std"
 DEFAULT_LAMMPS_EXECUTABLE = "/opt/lammps/200303/bin/lmp_mpi"
 DEFAULT_MOLTEMPLATE_SCRIPT = Path("/home/users/skyljw0714/bin/moltemplate/moltemplate/ltemplify.py")
+DEFAULT_MOLTEMPLATE_SH = Path("/home/users/skyljw0714/bin/moltemplate/moltemplate/scripts/moltemplate.sh")
 DEFAULT_PACKMOL_EXECUTABLE = Path("/home/users/skyljw0714/packmol-21.1.0/packmol")
 DEFAULT_AUTO_RESEARCH_PYTHON = Path("/home/users/skyljw0714/anaconda3/envs/auto-research/bin/python")
 
@@ -132,6 +133,7 @@ PACKMOL_OUTPUT_DIR = _path_from_env("SIMMOF_PACKMOL_OUTPUT_DIR", WORKING_DIR / "
 
 LAMMPS_EXECUTABLE = os.getenv("SIMMOF_LAMMPS_EXECUTABLE", DEFAULT_LAMMPS_EXECUTABLE)
 LAMMPS_MOLTEMPLATE_SCRIPT = _path_from_env("SIMMOF_MOLTEMPLATE_SCRIPT", DEFAULT_MOLTEMPLATE_SCRIPT)
+LAMMPS_MOLTEMPLATE_SH = _path_from_env("SIMMOF_MOLTEMPLATE_SH", DEFAULT_MOLTEMPLATE_SH)
 VASP_POTENTIAL_DIR_PATH = _path_from_env("SIMMOF_VASP_POTENTIAL_DIR", DEFAULT_VASP_POTENTIAL_DIR)
 VASP_EXECUTABLE = os.getenv("SIMMOF_VASP_EXECUTABLE", DEFAULT_VASP_EXECUTABLE)
 

@@ -83,6 +83,7 @@
   The following external software must be installed and available on the cluster:
 
   - LAMMPS
+  - Moltemplate
   - VASP
   - Zeo++
   - RASPA
@@ -102,6 +103,23 @@
   - The CSD Python API is installed with the CSD installation, and CCDC also states that it can be installed manually using provided conda packages.
   - Make sure the CCDC Python API is available in the Python environment used to run SimMOF.
   - If CCDC is not installed, structure-agent features that rely on `ccdc` will not work.
+
+  ### Moltemplate installation
+
+  SimMOF's LAMMPS input-generation workflow uses Moltemplate utilities such as
+  `ltemplify.py` and `moltemplate.sh`, so Moltemplate must be installed separately.
+
+  Download Moltemplate from the official website:
+
+  https://www.moltemplate.org/download.html
+
+  After installation, set the Moltemplate script paths in your configuration or
+  environment variables as needed for your local system.
+
+  Example checks:
+
+      /path/to/moltemplate.sh -h
+      python /path/to/ltemplify.py -h
 
   ———
 

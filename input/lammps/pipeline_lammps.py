@@ -5,9 +5,9 @@ import subprocess
 import textwrap
 import time
 from pathlib import Path
+from config import LAMMPS_MOLTEMPLATE_SCRIPT, LAMMPS_MOLTEMPLATE_SH
 
 LAMMPS_INTERFACE_COMMAND = "lammps-interface"
-LAMMPS_MOLTEMPLATE_COMMAND = "moltemplate.sh"
 LAMMPS_PACKMOL_TOLERANCE = 2.5
 LAMMPS_SUPERCELL_CUTOFF = 12.5
 LAMMPS_CHARGED_PAIR_CUTOFF = 10.0
@@ -118,7 +118,7 @@ def generate_lammps_inputs(
 ):
     from ase.io import read, write
 
-    from config import AUTO_RESEARCH_PYTHON, LAMMPS_MOLTEMPLATE_SCRIPT, TRAPPE_PAR_FILE, TRAPPE_TOP_FILE
+    from config import AUTO_RESEARCH_PYTHON, TRAPPE_PAR_FILE, TRAPPE_TOP_FILE
     from packmol.run_packmol import run_packmol_from_cif
 
     from .input_gen import (
@@ -294,7 +294,7 @@ def generate_lammps_inputs(
         print(f"[MOF-only] Wrote {system_xyz}")
 
     print("[Moltemplate] Building system from system.lt + system.xyz ...")
-    _run_command(f"{LAMMPS_MOLTEMPLATE_COMMAND} -xyz {system_xyz} system.lt", cwd=working_dir)
+    _run_command(f"{LAMMPS_MOLTEMPLATE_SH} -xyz {system_xyz} system.lt", cwd=working_dir)
 
     init_path = str(Path(working_dir) / "system.in.init")
     settings_path = str(Path(working_dir) / "system.in.settings")
