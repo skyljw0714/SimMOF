@@ -56,11 +56,14 @@
 
   - Python 3.9
   - conda environment manager
-  - Recommended main environment name: simmof
+  - The recommended environment is provided as `environment.yml`
+  - Recommended main environment name: `simmof`
 
   ### Python packages
 
-  The project uses packages such as:
+  The required Python packages are managed through `environment.yml`.
+
+  Key packages used in this project include:
 
   - pymatgen
   - torch
@@ -73,6 +76,7 @@
   - ase
   - numpy
   - pandas
+  - mofchecker
 
   ### External software
 
@@ -103,15 +107,25 @@
 
   ## Installation
 
-  Create and activate the conda environment:
+  Create the environment from the provided YAML file:
 
-  conda create -n simmof python=3.9 -y
-  conda activate simmof
+      conda env create -f environment.yml
+      conda activate simmof
 
-  Install the required Python packages:
+  If you want to create the environment under a different name for testing:
 
-  pip install -r requirements.txt
+      conda env create -n simmof-test -f environment.yml
+      conda activate simmof-test
 
+  After installation, verify that the main modules import correctly before running workflows.
+
+  Example checks:
+
+      python -c "import langchain_openai; print('langchain_openai ok')"
+      python -c "import mofchecker; print('mofchecker ok')"
+      python -c "from structure.agent import *; print('structure.agent ok')"
+      python -c "from input.lammps.pipeline_lammps import generate_lammps_inputs; print('pipeline ok')"
+      
   ———
 
   ## Environment Variables

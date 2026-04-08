@@ -2,8 +2,6 @@ import os
 import json
 import shutil
 import ase.io
-import textwrap
-import subprocess
 
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -29,7 +27,6 @@ class VASPAgent:
     def __init__(self, llm=None, debug_dump: bool = True):
         self.llm = llm or LLM_DEFAULT
         self.debug_dump = debug_dump
-        self.mace_env_prefix = "/home/users/skyljw0714/anaconda3/envs/mace"
 
         self.structure = VASPStructureAgent()
         self.input = VASPInputAgent(llm=self.llm)
@@ -162,15 +159,13 @@ class VASPAgent:
 
     
     def _prescreen_complex_candidates_with_mlip(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
-        from pathlib import Path
-
         candidates = ctx.get("complex_cif_paths") or []
         if not candidates:
             raise RuntimeError("[VASPAgent] no complex candidates found for MLIP prescreen")
 
         mlip_dir = Path(ctx["work_dir"]) / "mlip_prescreen"
 
-        prescreen = self._run_mlip_complex_candidates_in_mace_env(
+        prescreen = self._run_mlip_complex_prescreen(
             complex_cif_paths=candidates,
             mlip_dir=mlip_dir,
             device=ctx.get("mlip_device", "cpu"),
@@ -641,61 +636,35 @@ class VASPAgent:
 
         raise ValueError(f"[VASPAgent] Unknown job_id pattern: {job_id}")
 
-    def _run_mlip_complex_candidates_in_mace_env(
+    def _run_mlip_complex_prescreen(
         self,
         complex_cif_paths,
         mlip_dir,
         device="cpu",
         top_n=1,
     ):
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        from tool.utils import run_mlip_complex_candidates
+
         mlip_dir = Path(mlip_dir)
         mlip_dir.mkdir(parents=True, exist_ok=True)
 
-        result_json = mlip_dir / "_mlip_result.json"
+        print(f"[MLIP] direct run start")
+        print(f"[MLIP] num candidates = {len(complex_cif_paths)}")
+        print(f"[MLIP] mlip_dir = {mlip_dir}")
+        print(f"[MLIP] device = {device}")
 
-        complex_paths_json = json.dumps([str(p) for p in complex_cif_paths], ensure_ascii=False)
-
-        project_root_lit = json.dumps(project_root)
-        complex_paths_lit = json.dumps(complex_paths_json)
-        mlip_dir_lit = json.dumps(str(mlip_dir))
-        device_lit = json.dumps(str(device))
-        result_json_lit = json.dumps(str(result_json))
-
-        script = textwrap.dedent(f"""
-            import sys, json
-            sys.path.append({project_root_lit})
-
-            from tool.utils import run_mlip_complex_candidates
-
-            complex_cif_paths = json.loads({complex_paths_lit})
-
-            result = run_mlip_complex_candidates(
-                complex_cif_paths=complex_cif_paths,
-                okdir={mlip_dir_lit},
-                device={device_lit},
-                top_n={int(top_n)},
-            )
-
-            with open({result_json_lit}, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=2, ensure_ascii=False)
-        """)
-
-        proc = subprocess.run(
-            ["conda", "run", "-p", self.mace_env_prefix, "python", "-c", script],
-            capture_output=True,
-            text=True,
+        result = run_mlip_complex_candidates(
+            complex_cif_paths=[str(p) for p in complex_cif_paths],
+            okdir=str(mlip_dir),
+            device=str(device),
+            top_n=int(top_n),
         )
 
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "[VASPAgent] MLIP prescreen failed in mace env\n"
-                f"stdout:\n{proc.stdout}\n"
-                f"stderr:\n{proc.stderr}"
-            )
+        result_json = mlip_dir / "_mlip_result.json"
+        with open(result_json, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False, default=str)
 
-        if not result_json.exists():
-            raise RuntimeError(f"[VASPAgent] MLIP result json not found: {result_json}")
+        print(f"[MLIP] direct run finished")
+        print(f"[MLIP] result saved to {result_json}")
 
-        with open(result_json, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return result
