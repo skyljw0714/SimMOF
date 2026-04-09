@@ -125,10 +125,10 @@ Check for issues such as:
 - the snippet is incomplete or suspicious for the claimed software
 
 Return JSON with exactly this schema:
-{
+{{
   "status": "ok" or "needs_user_confirmation",
   "message": "string"
-}
+}}
 
 Rules:
 - status="ok" if the input looks broadly usable as-is.
@@ -162,56 +162,77 @@ Return ONLY valid JSON. No markdown. No extra keys."""
 
 MISSING_INFO_USER = """Given the original user query and the parsed MOF simulation queries, decide whether any required information is missing.
 
-You must determine whether the simulation can proceed safely.
+Your task is NOT to reinterpret the query creatively.
+Your task is to decide whether the request is EXECUTABLE as written.
 
-General guidance:
-- uptake at a single state point usually requires:
-  - MOF
-  - guest
-  - temperature
-  - pressure
-- isotherm usually requires:
-  - MOF
-  - guest
-  - temperature
-  - pressure range
-- henry_coefficient usually requires:
-  - MOF
-  - guest
-  - temperature
-- diffusivity usually requires:
-  - MOF
-  - guest
-  - temperature
-  - and either loading or pressure
-- binding_energy usually requires:
-  - MOF
-  - guest
-  - temperature/pressure are usually NOT required
-- surface_area / pore_volume usually require:
-  - MOF only
+A request may be semantically understandable but still require clarification before execution.
 
-Rules:
-1) Be conservative but practical.
-2) Ask only for truly required missing information.
-3) If everything essential is present, return needs_clarification=false.
-4) Ask for all missing required information in ONE combined question.
-5) Keep the question short and user-facing.
-6) missing_fields should use simple canonical names like:
-   - temperature
-   - pressure
-   - pressure_range
-   - guest
-   - mof
-   - loading
-   - composition
+General required information by property:
+
+- surface_area:
+  required = [mof]
+
+- pore_volume:
+  required = [mof]
+
+- lcd:
+  required = [mof]
+
+- pld:
+  required = [mof]
+
+- uptake:
+  required = [mof, guest, temperature, pressure]
+
+- isotherm:
+  required = [mof, guest, temperature, pressure_range]
+
+- henry_coefficient:
+  required = [mof, guest, temperature]
+
+- diffusivity:
+  required = [mof, guest, temperature]
+  and at least one of [loading, pressure]
+
+- binding_energy:
+  required = [mof, guest]
+
+- selectivity:
+  required = [mof, composition, temperature, pressure]
+
+- working_capacity:
+  required = [mof, guest, temperature, pressure]
+
+Special rule for broad adsorption requests:
+- If the original user query says only "adsorption" without specifying the adsorption property subtype
+  (for example uptake, isotherm, Henry coefficient, heat of adsorption, mixture adsorption, selectivity),
+  then you MUST set needs_clarification=true.
+- In that case, include "property" in missing_fields.
+
+Hard rules:
+1) Never invent missing guest, temperature, pressure, loading, pressure_range, or composition.
+2) If execution-critical fields are missing, set needs_clarification=true.
+3) If the parsed query contains Property="uptake" but guest is null, you MUST set needs_clarification=true.
+4) If the parsed query contains Property="uptake" but the original user query does not specify temperature or pressure, you MUST set needs_clarification=true.
+5) If the user query is broad/underspecified, prefer clarification over silent assumptions.
+6) Ask for all missing required information in one short user-facing question.
+
+missing_fields must use only canonical names from:
+- property
+- mof
+- guest
+- temperature
+- pressure
+- pressure_range
+- loading
+- composition
 
 Return JSON with exactly this schema:
-{
+{{
   "needs_clarification": true or false,
   "missing_fields": ["field1", "field2"],
   "question": "string"
-}
+}}
 
 Original user query:
 <<<{user_input}>>>

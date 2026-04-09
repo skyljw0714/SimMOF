@@ -18,7 +18,6 @@ DEFAULT_LAMMPS_EXECUTABLE = "/opt/lammps/200303/bin/lmp_mpi"
 DEFAULT_MOLTEMPLATE_SCRIPT = Path("/home/users/skyljw0714/bin/moltemplate/moltemplate/ltemplify.py")
 DEFAULT_MOLTEMPLATE_SH = Path("/home/users/skyljw0714/bin/moltemplate/moltemplate/scripts/moltemplate.sh")
 DEFAULT_PACKMOL_EXECUTABLE = Path("/home/users/skyljw0714/packmol-21.1.0/packmol")
-DEFAULT_AUTO_RESEARCH_PYTHON = Path("/home/users/skyljw0714/anaconda3/envs/auto-research/bin/python")
 
 for env_file in (PROJECT_ROOT / ".env", PROJECT_ROOT / "config.env"):
     if env_file.exists():
@@ -147,10 +146,6 @@ CSD_API_CONDA_ENV_PREFIX = Path(
 CSD_API_PYTHON = os.getenv(
     "SIMMOF_CSD_API_PYTHON",
     str(CSD_API_CONDA_ENV_PREFIX / "bin" / "python"),
-)
-AUTO_RESEARCH_PYTHON = _path_from_env(
-    "SIMMOF_AUTO_RESEARCH_PYTHON",
-    _first_existing(DEFAULT_AUTO_RESEARCH_PYTHON, Path(os.sys.executable)),
 )
 
 RAG_STORE_DIR = _path_from_env(

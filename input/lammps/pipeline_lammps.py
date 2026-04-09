@@ -1,9 +1,6 @@
-import json
 import os
 import shutil
 import subprocess
-import textwrap
-import time
 from pathlib import Path
 from config import LAMMPS_MOLTEMPLATE_SCRIPT, LAMMPS_MOLTEMPLATE_SH
 
@@ -118,7 +115,7 @@ def generate_lammps_inputs(
 ):
     from ase.io import read, write
 
-    from config import AUTO_RESEARCH_PYTHON, TRAPPE_PAR_FILE, TRAPPE_TOP_FILE
+    from config import TRAPPE_PAR_FILE, TRAPPE_TOP_FILE
     from packmol.run_packmol import run_packmol_from_cif
 
     from .input_gen import (
@@ -367,7 +364,8 @@ def generate_lammps_inputs(
 
     if mode != "reproduce":
         try:
-            project_root = str(Path(__file__).resolve().parents[2])
+            from rag.agent import RagAgent
+
             rag_ctx = {
                 "job_name": job_name,
                 "mof": mof_name,
@@ -376,37 +374,15 @@ def generate_lammps_inputs(
                 "query_text": query_text or "",
             }
 
-            rag_script = f"""
-import sys, json
-sys.path.append({json.dumps(project_root)})
-from rag.agent import RagAgent
+            agent = RagAgent(agent_name="RagAgent")
+            out = agent.run_for_system_in(rag_ctx, top_files=5)
+            rag_summaries = (out.get("rag_summaries") or "").strip()
 
-agent = RagAgent(agent_name="RagAgent")
-out = agent.run_for_system_in({json.dumps(rag_ctx, ensure_ascii=False)}, top_files=5)
-print(json.dumps({{"rag_summaries": out.get("rag_summaries","")}}, ensure_ascii=False))
-""".strip()
-
-            auto_py = str(AUTO_RESEARCH_PYTHON)
-            result = subprocess.run(
-                [auto_py, "-c", rag_script],
-                capture_output=True,
-                text=True,
-                cwd=working_dir,
-            )
-
-            if result.returncode == 0 and result.stdout.strip():
-                obj = json.loads(result.stdout.strip())
-                rag_summaries = (obj.get("rag_summaries") or "").strip()
-                if rag_summaries:
-                    print("[RAG] system.in hints enabled (auto-research)")
-                else:
-                    print("[RAG] no relevant hints found (auto-research)")
+            if rag_summaries:
+                print("[RAG] system.in hints enabled")
             else:
-                print("[RAG] auto-research run failed")
-                if result.stdout:
-                    print("STDOUT:\n", result.stdout)
-                if result.stderr:
-                    print("STDERR:\n", result.stderr)
+                print("[RAG] no relevant hints found")
+
         except Exception as e:
             print(f"[RAG] disabled due to error: {e}")
 

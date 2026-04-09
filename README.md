@@ -194,16 +194,14 @@
 
   ———
 
-  ## Notes
+  ## Demo notebook
 
-  - SimMOF is intended for cluster use, not only local interactive runs.
-  - .env should be treated as the primary place to configure executable paths and API keys.
-  - VASP is not bundled; you must provide a valid licensed installation and pseudopotentials.
-  - The exact job submission behavior depends on your cluster environment and scheduler setup.
-  - Before running production workflows, verify:
-      - executable paths
-      - pseudopotential locations
-      - working directory permissions
-      - API key availability
-  - AI-generated planning or input fixes should be reviewed before publication-grade simulations.
-  - Keep large workflow outputs on scratch or project storage rather than home directories.
+  A step-by-step example is available in:
+
+  - `examples/demo.ipynb`
+
+  This notebook covers:
+  - natural-language query parsing,
+  - clarification handling,
+  - workflow planning,
+  - and reproduce-style reuse of user-provided simulation input.
