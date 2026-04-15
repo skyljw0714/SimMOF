@@ -42,7 +42,7 @@ class VASPErrorAgent(ErrorAgent):
         llm=None,
         max_lines: int = 250,
         wait_interval_sec: int = 30,
-        wait_timeout_sec: int = 24 * 3600,
+        wait_timeout_sec: int = 168 * 3600,
     ):
         self._init_error_agent(
             llm=llm,

@@ -61,6 +61,121 @@ class LAMMPSInputAgent:
                 stdout=stdout_buffer.getvalue(),
                 stderr=stderr_buffer.getvalue(),
             )
+    
+    def _extract_guest_types_from_system_in(self, system_in_path):
+        import re
+        from pathlib import Path
+
+        text = Path(system_in_path).read_text()
+        m = re.search(r'^\s*group\s+guest\s+type\s+(.+)$', text, re.MULTILINE)
+        if not m:
+            return []
+
+        return [int(x) for x in m.group(1).split()]
+
+    def _infer_production_start_step_from_system_in(self, system_in_path):
+        import re
+        from pathlib import Path
+
+        total = 0
+        text = Path(system_in_path).read_text()
+
+        for line in text.splitlines():
+            s = line.strip()
+
+            if re.match(r'^compute\s+msd_guest\b', s):
+                break
+
+            m = re.match(r'^run\s+(\d+)\b', s)
+            if m:
+                total += int(m.group(1))
+
+        return total
+
+    def _parse_masses_from_system_data(self, system_data_path):
+        from pathlib import Path
+
+        masses = {}
+        lines = Path(system_data_path).read_text().splitlines()
+
+        in_masses = False
+        for line in lines:
+            s = line.strip()
+
+            if not s:
+                continue
+
+            if s.lower() == "masses":
+                in_masses = True
+                continue
+
+            if in_masses:
+                if s[0].isalpha():
+                    break
+
+                parts = s.split()
+                if len(parts) >= 2:
+                    try:
+                        atype = int(parts[0])
+                        mass = float(parts[1])
+                        masses[atype] = mass
+                    except ValueError:
+                        pass
+
+        return masses
+    
+    def _infer_dt_fs_from_system_in(self, system_in_path):
+        import re
+        from pathlib import Path
+
+        text = Path(system_in_path).read_text()
+        current_timestep = None
+
+        for line in text.splitlines():
+            s = line.strip()
+
+            m = re.match(r'^timestep\s+([0-9Ee+.\-]+)\b', s)
+            if m:
+                current_timestep = float(m.group(1))
+
+            if re.match(r'^compute\s+msd_guest\b', s):
+                break
+
+        if current_timestep is None:
+            return 1.0
+
+        return current_timestep
+
+    def _inject_diffusivity_context(self, context):
+        from pathlib import Path
+
+        prop = str(context.get("property", "")).lower()
+        if prop not in ["diffusivity", "diffusion", "self_diffusivity", "self_diffusion_coefficient"]:
+            return context
+
+        work_dir = Path(context["work_dir"])
+        system_in_path = work_dir / "system.in"
+        system_data_path = work_dir / "system.data"
+
+        if not system_in_path.exists():
+            raise RuntimeError(f"system.in not found: {system_in_path}")
+
+        if not system_data_path.exists():
+            raise RuntimeError(f"system.data not found: {system_data_path}")
+
+        guest_types = self._extract_guest_types_from_system_in(system_in_path)
+        production_start_step = self._infer_production_start_step_from_system_in(system_in_path)
+        masses_by_type = self._parse_masses_from_system_data(system_data_path)
+        dt_fs = self._infer_dt_fs_from_system_in(system_in_path)
+
+        context["guest_types"] = guest_types
+        context["production_start_step"] = production_start_step
+        context["masses_by_type"] = masses_by_type
+        context["dt_fs"] = dt_fs
+        context.setdefault("fit_start_ps", 200.0)
+        context.setdefault("fit_end_ps", None)
+
+        return context
 
     def run(self, context):
         paths = context.get("paths") if isinstance(context.get("paths"), dict) else {}
@@ -113,5 +228,7 @@ class LAMMPSInputAgent:
 
         if result.returncode != 0:
             raise RuntimeError("LAMMPS input generation failed; skipping submission.")
+
+        context = self._inject_diffusivity_context(context)
 
         return context

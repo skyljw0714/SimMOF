@@ -72,7 +72,7 @@ ENCUT = {VASP_RELAX_INCAR_DEFAULTS["ENCUT"]}
 EDIFF = {VASP_RELAX_INCAR_DEFAULTS["EDIFF"]}
 EDIFFG = {VASP_RELAX_INCAR_DEFAULTS["EDIFFG"]}
 IBRION = {VASP_RELAX_INCAR_DEFAULTS["IBRION"]}
-ISIF = {VASP_RELAX_INCAR_DEFAULTS["ISIF"]}
+ISIF = {{ISIF}}
 NSW = {VASP_RELAX_INCAR_DEFAULTS["NSW"]}
 LREAL = {VASP_RELAX_INCAR_DEFAULTS["LREAL"]}
 KSPACING = {VASP_RELAX_INCAR_DEFAULTS["KSPACING"]}
@@ -156,7 +156,38 @@ LWAVE  = {VASP_BANDGAP_INCAR_DEFAULTS["LWAVE"]}
 LCHARG = {VASP_BANDGAP_INCAR_DEFAULTS["LCHARG"]}
 """
 
+def get_relax_isif(query: dict) -> str:
+    stage = (query.get("vasp_stage") or "").lower()
+    role = (query.get("vasp_role") or "").lower()
+    job_id = (query.get("job_id") or "").lower()
 
+    if stage == "guest" or role == "guest" or job_id.endswith("_guest"):
+        return "2"
+
+    return "3"
+
+def render_vasp_format(query: dict) -> str:
+    vasp_format = select_vasp_format(query)
+
+    if vasp_format == VASP_FORMAT:
+        return vasp_format.format(
+            system="{system}",
+            ISIF=get_relax_isif(query),
+        )
+
+    if vasp_format == VASP_DOS_FORMAT:
+        return vasp_format.format(
+            system="{system}",
+            ICHARG="{ICHARG}",
+        )
+
+    if vasp_format == VASP_BG_FORMAT:
+        return vasp_format.format(
+            system="{system}",
+        )
+
+    return vasp_format
+    
 def select_vasp_format(query: dict) -> str:
     stage = (query.get("vasp_stage") or "").lower()
     calc = (query.get("vasp_calc_type") or "").lower()

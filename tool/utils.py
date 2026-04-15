@@ -186,13 +186,18 @@ def run_ase_atom_type(cif_dir: str, okdir: str, atom_type: str):
 
     return good_cifs
 
-def optimize_structure(atoms, device="cpu"):
+def optimize_structure(atoms, device="cpu", fmax=0.02, max_steps=200):
     from mace.calculators import mace_mp
 
     calc = mace_mp(model="large", dispersion=True, default_dtype="float64", device=device)
     atoms.calc = calc
+
     dyn = BFGS(atoms, logfile=None)
-    dyn.run(fmax=0.02)
+    converged = dyn.run(fmax=fmax, steps=max_steps)
+
+    if not converged:
+        raise RuntimeError(f"MLIP optimization did not converge within {max_steps} steps")
+
     return atoms, atoms.get_potential_energy()
 
 
@@ -320,7 +325,12 @@ def run_mlip_complex_candidates(
             atoms = read(cif_path)
             atoms.set_pbc(True)
 
-            opt_atoms, energy = optimize_structure(atoms, device=device)
+            opt_atoms, energy = optimize_structure(
+                atoms,
+                device=device,
+                fmax=0.02,
+                max_steps=200,
+            )
 
             relaxed_cif = cand_dir / f"{cif_path.stem}_mlip_relaxed.cif"
             from ase.io import write

@@ -62,6 +62,7 @@ class LAMMPSErrorAgent(ErrorAgent):
             "- Treat `kspace_style` as a solver-initialization command dependent on final box geometry.\n"
             "- Never suggest adding or redefining `kspace_style` after a `minimize` or `run` command.\n"
             "- If fixing `kspace_style`, place it AFTER box geometry is finalized and STRICTLY BEFORE the first `minimize` or `run`.\n"
+            "If the log shows `1 atoms in group guest`, the failing command is `velocity guest create ...`, and the error is `Attempting to rescale a 0.0 temperature`, remove the `velocity guest create ...` line entirely instead of modifying it.\n"
             "\n"
             "Output format (strict):\n"
             "FILE: <filename>\n"

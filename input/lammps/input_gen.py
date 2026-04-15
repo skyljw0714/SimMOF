@@ -413,8 +413,10 @@ The Run Section must follow this structure:
 - Define neighbor and neigh_modify settings.
   * Exclude MOF-MOF interactions with `neigh_modify exclude group MOF MOF`
 - Define a default timestep, e.g. `timestep 1.0`.
-- Define a dump for trajectory output using unwrapped coordinates:
-  * e.g. `dump ... custom 1000 traj.lammpstrj id type xu yu zu`
+- Define a dump for trajectory output using unwrapped coordinates.
+- IMPORTANT: the dump MUST include molecule IDs so that molecular center-of-mass MSD can be computed in post-processing.
+- Use a trajectory dump of the form:
+  * `dump traj all custom 1000 traj.lammpstrj id mol type xu yu zu`
 - Set thermo output:
   * e.g. `thermo 1000`
   * e.g. `thermo_style custom step temp etotal press`
@@ -447,19 +449,33 @@ The Run Section must follow this structure:
 - Run a short NVE warm-up:
   * e.g. `run 10000`
 
-5) MSD computation and long production run
-- Define MSD for the guest group, using the center-of-mass option:
-  * `compute msd_guest guest msd`
-- Time-average the MSD and write to file:
-  * e.g. `fix msd_out guest ave/time 1000 1 1000 c_msd_guest[4] file msd_guest.dat`
-- Run a long NVE production to accumulate MSD data:
-  * e.g. `run 1000000`
+5) MSD-related output and long production run
+- IMPORTANT:
+  The target property is the diffusivity of whole guest molecules, i.e. molecular center-of-mass diffusion.
+- Therefore, the trajectory dump with `mol` and unwrapped coordinates is REQUIRED for post-processing of molecular COM MSD.
+- If you include a LAMMPS `compute msd` command, it is ONLY a supplementary atomic/group MSD output.
+- If `compute msd` is included:
+  * use `compute msd_guest guest msd`
+  * DO NOT use `com yes`
+  * DO NOT use any option that subtracts the center-of-mass drift of the whole guest group
+- If `fix ave/time` is used for MSD output, it should write `c_msd_guest[4]` to `msd_guest.dat`.
+- Run a long NVE production to accumulate trajectory/MSD data:
+  * prefer multi-nanosecond production, e.g. `run 5000000` or longer
 
 Do NOT include:
 - NPT or NVT ensembles (no `fix npt`, `fix nvt`)
 - SHAKE constraints
 - `fix momentum` or similar momentum-removal fixes
 - Any `kspace_style` commands (assume they are defined in other sections)
+
+CRITICAL DIFFUSIVITY RULES:
+- The scientifically relevant diffusivity is based on the center of mass of each guest molecule, not on individual guest atoms.
+- The Run Section must therefore preserve all information needed for post-processing molecular COM MSD:
+  * include `mol` in the trajectory dump
+  * include unwrapped coordinates `xu yu zu`
+- Do NOT attempt to approximate molecular diffusivity by subtracting the center of mass of the entire guest group.
+- Never use `compute msd ... com yes` for the guest group in this task.
+- If only a simple in-LAMMPS MSD is included, it must be clearly just the plain guest-group MSD via `compute msd_guest guest msd`, while the molecular COM diffusivity is intended to be computed later from the dumped trajectory.
 
 IMPORTANT:
 If simulation_description contains "JOB_NAME=..._<TEMP>K" (e.g., _200K, _300K, _400K),
@@ -758,33 +774,6 @@ Rules for using RAG notes:
 
 Return only the Run Section code (no markdown).
 """
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 PROMPT_INTERACTION_ENERGY_MOF_GUEST = """
 You are an expert in writing LAMMPS input scripts.

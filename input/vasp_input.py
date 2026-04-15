@@ -12,7 +12,7 @@ from file.agent import VASPFileAgent
 from .vasp.prompt import (
     create_vasp_incar_prompt,
     get_vasp_system_message,
-    select_vasp_format,
+    render_vasp_format,
 )
 
 
@@ -123,7 +123,7 @@ class VASPInputAgent:
             "recommended_icharg": icharg,
         }
 
-        vasp_format_raw = select_vasp_format(query)
+        vasp_format_raw = render_vasp_format(query)
         vasp_format = vasp_format_raw.replace("{system}", str(system_label))
         vasp_format = vasp_format.replace("{ICHARG}", str(icharg))
 
