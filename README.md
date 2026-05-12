@@ -82,13 +82,13 @@
 
   The following external software must be installed and available on the cluster:
 
-  - LAMMPS
-  - Moltemplate
-  - VASP
-  - Zeo++
-  - RASPA
-  - Packmol
+  - LAMMPS (3 Mar 2020)
+  - VASP (5.4.1)
+  - RASPA (2.0.37)
+  - Zeo++ (0.3)
+  - Packmol (21.1.0)
   - CCDC / CSD Python API
+  - Moltemplate
 
   ### CCDC / CSD Python API
 
@@ -123,12 +123,32 @@
 
   ———
 
+  ## Tested Environment
+
+  SimMOF was tested on a Linux-based HPC cluster environment.
+
+  - Operating system: CentOS Linux 7.6.1810 (Core)
+  - Kernel: Linux 3.10.0-957.el7.x86_64
+  - Architecture: x86_64
+  - Python: 3.9
+  - Environment manager: conda
+
+  ## Hardware Requirements
+
+  No GPU or other non-standard hardware is required for the lightweight demo workflow.
+
+  Production-scale simulation workflows may require access to an HPC cluster, depending on the selected simulation engine, system size, and number of candidate structures. In particular, large-scale LAMMPS, RASPA, Zeo++, and VASP workflows are intended to be executed on CPU-based or GPU-enabled HPC compute nodes through a batch scheduler.
+
+  The required hardware resources depend on the specific workflow and are not required for running the basic demo notebook.
+
   ## Installation
 
   Create the environment from the provided YAML file:
 
       conda env create -f environment.yml
       conda activate simmof
+
+  Typical installation time for the conda environment was approximately 20 minutes in the tested HPC cluster environment.
 
   If you want to create the environment under a different name for testing:
 
@@ -205,3 +225,7 @@
   - clarification handling,
   - workflow planning,
   - and reproduce-style reuse of user-provided simulation input.
+
+  ## License
+
+  This project is licensed under the MIT License. See the `LICENSE` files for more infomration.

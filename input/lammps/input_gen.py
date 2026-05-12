@@ -989,16 +989,41 @@ def generate_system_in(simulation_description: str,
             example_text=example_text,
         )
     else:
-        if property in ("diffusivity", "mean_squared_displacement", "msd", "self_diffusion_coefficient"):
+        prop = (property or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+        if (
+            ("diffus" in prop)
+            or (prop in {"msd", "mean_squared_displacement", "self_diffusion_coefficient"})
+        ):
             prompt_template = PROMPT_DIFFUSIVITY
-        elif property in ("thermal_expansion", "thermal expansion", "thermal_expansion_coefficient"):
+
+        elif (
+            ("thermal_expansion" in prop)
+            or ("cte" in prop)
+        ):
             prompt_template = PROMPT_THERMAL_EXPANSION
-        elif property in ("rdf", "mof_guest_rdf", "radial_distribution_function", "gr"):
+
+        elif (
+            ("rdf" in prop)
+            or ("radial_distribution_function" in prop)
+            or ("gr" == prop)
+        ):
             prompt_template = PROMPT_RDF_MOF_GUEST
-        elif property in ("interaction_energy", "mof_guest_interaction_energy", "ff_interaction_energy", "group_group_energy"):
+
+        elif (
+            ("interaction_energy" in prop)
+            or ("group_group_energy" in prop)
+            or ("ff_interaction_energy" in prop)
+        ):
             prompt_template = PROMPT_INTERACTION_ENERGY_MOF_GUEST
-        elif property in ("youngs_modulus", "young_modulus", "young", "elastic_modulus", "elastic"):
+
+        elif (
+            ("young" in prop)
+            or ("elastic" in prop)
+            or ("modulus" in prop)
+        ):
             prompt_template = PROMPT_YOUNGS_MODULUS
+
         else:
             prompt_template = PROMPT_GENERIC
 

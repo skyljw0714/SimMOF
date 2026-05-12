@@ -626,6 +626,7 @@ class VASPAgent:
             "relax",
             "electronic_bandgap",
             "bandgap",
+            "band_gap",
             "neb",
             "migration_barrier",
             "charge_density_difference",

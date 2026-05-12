@@ -139,9 +139,19 @@ def generate_lammps_inputs(
     print(f"[LAMMPS pipeline] working_dir = {working_dir}")
     print(f"[LAMMPS pipeline] mof = {mof_name}, guest = {guest_name}, property = {property_name}")
 
-    prop = property_name.lower()
-    is_te = ("thermal_expansion" in prop) or ("thermal expansion" in prop)
-    is_young = ("young" in prop) or ("elastic" in prop) or ("modulus" in prop)
+    prop = (property_name or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+    is_te = (
+        ("thermal_expansion" in prop)
+        or ("cte" in prop)
+    )
+
+    is_young = (
+        ("young" in prop)
+        or ("elastic" in prop)
+        or ("modulus" in prop)
+    )
+
     is_mof_only = is_te or is_young
 
     unit_cif_file = str(Path(working_dir) / f"{mof_name}.cif")

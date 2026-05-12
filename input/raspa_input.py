@@ -1139,17 +1139,20 @@ Choose the best matching candidate name, or null if nothing matches.
         elif prop == "selectivity":
             params = self._build_params(context, include_guest=False)
 
+            mix = self._infer_mixture_spec_with_llm(context)
+            components = mix["components"]
+            comp_map = {c["guest"]: float(c["mol_fraction"]) for c in components}
+
             g0, g1 = self._infer_two_guests_with_llm(context)
-            if {g0, g1} == {"CO2", "N2"}:
-                if g0 != "CO2":
-                    g0, g1 = g1, g0
-                y0, y1 = 0.15, 0.85
-            elif {g0, g1} == {"Xe", "Kr"}:
-                if g0 != "Xe":
-                    g0, g1 = g1, g0
-                y0, y1 = 0.2, 0.8
-            else:
-                y0, y1 = 0.5, 0.5
+
+            if g0 not in comp_map or g1 not in comp_map:
+                raise ValueError(
+                    f"Mixture fractions for selectivity guests not found. "
+                    f"guests=({g0}, {g1}), components={components}"
+                )
+
+            y0 = comp_map[g0]
+            y1 = comp_map[g1]
 
             ctx0 = {**context, "guest": g0}
             rag0 = self._get_raspa_rag_hints(ctx0, top_files=5)

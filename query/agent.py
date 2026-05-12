@@ -203,6 +203,9 @@ General required information by property:
 - working_capacity:
   required = [mof, guest, temperature, pressure]
 
+- thermal_expansion:
+  required = [mof, temperature_range, pressure, cte_type]
+
 Special rule for broad adsorption requests:
 - If the original user query says only "adsorption" without specifying the adsorption property subtype
   (for example uptake, isotherm, Henry coefficient, heat of adsorption, mixture adsorption, selectivity),
@@ -226,6 +229,8 @@ missing_fields must use only canonical names from:
 - pressure_range
 - loading
 - composition
+- temperature_range
+- cte_type
 
 Return JSON with exactly this schema:
 {{
@@ -455,10 +460,6 @@ def analyze_mof_query(user_input: str, llm=None):
         
         analysis_recommendation_json = _plan_to_json_text(plan_obj)
         analysis_enabled = True
-
-    
-
-
     
     tool_desc_text = "=== Simulation Software Descriptions ===\n"
     for tool, desc in AGENT_DESCRIPTIONS.items():
