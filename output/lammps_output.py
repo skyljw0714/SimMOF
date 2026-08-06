@@ -85,6 +85,105 @@ class LAMMPSOutputAgent:
             "alpha_V_per_K": alpha_V,
         }
 
+    def _parse_youngs_stress_strain(self, path: str) -> Dict[str, List[float]]:
+        step, strain, stress = [], [], []
+        with open(path, "r") as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                parts = s.split()
+                if len(parts) < 3:
+                    continue
+                try:
+                    step_value = float(parts[0])
+                    strain_value = float(parts[1])
+                    stress_value = float(parts[2])
+                except ValueError:
+                    continue
+                if not all(np.isfinite(x) for x in (step_value, strain_value, stress_value)):
+                    continue
+                step.append(step_value)
+                strain.append(strain_value)
+                stress.append(stress_value)
+
+        if len(strain) < 3:
+            raise RuntimeError(f"Not enough stress-strain points in {path}")
+        return {"step": step, "strain": strain, "stress": stress}
+
+    @staticmethod
+    def _detect_lammps_units(work_dir: str) -> str:
+        for filename in ("system.in.init", "system.in"):
+            path = os.path.join(work_dir, filename)
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    s = line.strip().lower()
+                    if s.startswith("units "):
+                        return s.split()[1]
+        return "unknown"
+
+    def _fit_youngs_modulus(
+        self,
+        strain: np.ndarray,
+        stress: np.ndarray,
+        units_style: str,
+        max_abs_strain: float = 0.01,
+    ) -> Dict[str, Any]:
+        mask = np.isfinite(strain) & np.isfinite(stress)
+        linear_mask = mask & (np.abs(strain) <= max_abs_strain)
+        if int(np.sum(linear_mask)) >= 3:
+            mask = linear_mask
+
+        x = strain[mask]
+        y = stress[mask]
+        if len(x) < 3 or len(np.unique(x)) < 2:
+            raise RuntimeError("Not enough distinct finite strain points for Young's modulus fit.")
+
+        slope, intercept, r_value, p_value, std_err = linregress(x, y)
+        pressure_units = {
+            "real": ("atm", 1.01325e-4),
+            "metal": ("bar", 1.0e-4),
+            "si": ("Pa", 1.0e-9),
+            "cgs": ("barye", 1.0e-10),
+        }
+        pressure_unit, to_gpa = pressure_units.get(units_style, ("unknown", None))
+        warnings = []
+        if to_gpa is None:
+            warnings.append(
+                f"LAMMPS units style '{units_style}' is not converted to GPa; use the raw fitted slope."
+            )
+        if slope <= 0.0:
+            warnings.append(
+                "The fitted slope is non-positive; check the stress sign convention and whether the sampled strain range is elastic."
+            )
+        r2 = float(r_value**2)
+        if r2 < 0.95:
+            warnings.append(
+                f"The stress-strain fit has low linearity (R^2={r2:.3f}); do not treat the fitted modulus as quantitatively reliable."
+            )
+        if slope != 0.0 and abs(float(std_err / slope)) > 0.20:
+            warnings.append(
+                "The slope standard error exceeds 20% of the fitted modulus; inspect relaxation convergence and the elastic strain window."
+            )
+
+        return {
+            "model": "stress = intercept + E * strain",
+            "n_fit_points": int(len(x)),
+            "strain_min": float(np.min(x)),
+            "strain_max": float(np.max(x)),
+            "max_abs_strain_requested": float(max_abs_strain),
+            "stress_unit": pressure_unit,
+            "slope_stress_unit": float(slope),
+            "intercept_stress_unit": float(intercept),
+            "youngs_modulus_GPa": float(slope * to_gpa) if to_gpa is not None else None,
+            "std_err_GPa": float(std_err * to_gpa) if to_gpa is not None else None,
+            "r2": r2,
+            "p_value": float(p_value),
+            "warnings": warnings,
+        }
+
     def _parse_msd_file(self, path: str) -> Tuple[List[int], List[float]]:
         steps = []
         msd = []
@@ -407,7 +506,12 @@ class LAMMPSOutputAgent:
 
         if not context.get("lammps_success", False):
             print("[LAMMPSOutputAgent] lammps_success=False -> skipping output parsing")
-            results["lammps_output_status"] = "failed"
+            results["lammps_output_status"] = (
+                "blocked_missing_structure"
+                if context.get("lammps_status")
+                == "needs_structure_from_user"
+                else "failed"
+            )
             return context
 
         prop = (context.get("property") or context.get("simulation_property") or "").lower()
@@ -449,6 +553,46 @@ class LAMMPSOutputAgent:
                 "[LAMMPSOutputAgent] thermal expansion: "
                 f"alpha_V = {fit['alpha_V_per_K']:.4e} 1/K, "
                 f"dV/dT = {fit['dVdT']:.4e}, R^2 = {fit['r2']:.3f}"
+            )
+            return context
+
+        if ("young" in prop) or ("elastic" in prop) or ("modulus" in prop):
+            stress_strain_path = os.path.join(work_dir, "youngs_stress_strain.dat")
+            if not os.path.exists(stress_strain_path):
+                print(f"[LAMMPSOutputAgent] WARNING: {stress_strain_path} not found.")
+                results["lammps_output_status"] = "no_youngs_stress_strain"
+                return context
+
+            try:
+                raw = self._parse_youngs_stress_strain(stress_strain_path)
+                units_style = self._detect_lammps_units(work_dir)
+                fit = self._fit_youngs_modulus(
+                    np.asarray(raw["strain"], dtype=float),
+                    np.asarray(raw["stress"], dtype=float),
+                    units_style=units_style,
+                    max_abs_strain=float(context.get("youngs_fit_max_abs_strain", 0.01)),
+                )
+            except Exception as e:
+                print(f"[LAMMPSOutputAgent] ERROR parsing Young's modulus output: {e}")
+                results["lammps_output_status"] = "youngs_modulus_parse_error"
+                return context
+
+            results["youngs_modulus"] = {
+                "stress_strain_file": "youngs_stress_strain.dat",
+                "lammps_units_style": units_style,
+                "deformation_axis": "x",
+                "raw": raw,
+                "fit": fit,
+                "limitations": [
+                    "This is a small-strain uniaxial x-direction modulus, not a full elastic tensor.",
+                    "Verify that system.in relaxed the lateral y/z cell dimensions at zero pressure after each x strain increment.",
+                    "The result depends on force field quality, relaxation protocol, strain range, and stress sign convention.",
+                ],
+            }
+            results["lammps_output_status"] = "ok"
+            print(
+                "[LAMMPSOutputAgent] Young's modulus: "
+                f"E = {fit.get('youngs_modulus_GPa')} GPa, R^2 = {fit['r2']:.3f}"
             )
             return context
 

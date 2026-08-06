@@ -1,0 +1,506 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+<head>
+	<title>Zeo++ - High throughput analysis of crystalline porous materials</title>
+	<base href="http://www.zeoplusplus.org/" />
+	<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+	<link rel="stylesheet" type="text/css" media="screen, projection" href="http://www.maciejharanczyk.info/Zeopp/default.css" />
+	<meta name="description" content="An open source code for geometry-based analysis of crystalline porous materials." />
+	<meta name="keywords" content="zeo++, zeopp, zeolite, mof, porous materials, free sphere, included sphere, accessible surface, accessible volume, voronoi, voro++, Chris Rycroft, LBL, LBNL" />
+	<meta name="author" content="Maciej Haranczyk, Chris Rycroft" />
+	<meta name="robots" content="all" />
+	<link href="index.html" rel="start" title="Zeo++ homepage" />
+	<link href="aboutweb.html" rel="help" title="About the website" />
+<!--	<link href="map.html" rel="index" title="Site Map" />
+-->
+
+<!-- script to handle download form 
+-->
+<style type="text/css">
+.error {
+	color: red;
+	font: 12px verdana;
+	padding-left: 1px
+}
+</style>
+
+<script type="text/javascript" src="java/jquery.js"></script>
+<script type="text/javascript" src="java/jquery.validate.js"></script>
+<script type="text/javascript">
+$(document).ready(function() {	
+	
+	$("#user_data").validate({
+		rules:{
+			first_name: "required",
+			last_name: "required",
+			org_name: "required",
+			user_email:{
+				required: true,
+				email: true
+			},
+			use_type: "required",
+			project_txt: "required"
+			
+		},
+		messages:{
+			first_name: "Missing!",
+			last_name: "Missing!",
+			org_name: "Missing!",
+			user_email: "Missing!",
+			use_type : "Please choose one!",
+			project_txt : "Tell us why you are downloading this code!"
+		}	
+	});
+
+
+});
+</script>
+
+
+</head>
+<body id="s_examples">
+<div id="container">
+	<div id="head">
+		<h1><a href="./">Zeo++</a></h1>
+		<hr />
+		<div id="tabs">
+			<ul>
+				<li id="m_about"><a href="about.html"><b>About</b></a></li>
+				<li id="m_examples"><a href="examples.html"><b>Examples</b></a></li>
+				<li id="m_download"><a href="download.html"><b>Download</b></a></li>  
+
+                                <li id="m_doc"><a href="docs.html"><b>Documentation</b></a></li>
+<!--				<li id="m_doc"><a href="doc/"><b>Documentation</b></a></li>
+-->
+			</ul>
+		</div>
+	</div>
+	<hr />
+	<div id="content">
+
+<!--
+<div class="fig" style="width: 250px">
+	<img src="obliquevoro.png" width="250" height="244" alt="A Voronoi tessellation with an oblique wall boundary condition" />
+</div>
+-->
+
+<h2 class="top">Using Zeo++</h2>
+
+<p>The main Zeo++ utility works in a text terminal and can be called by executing the "network" binary. 
+The to-be-analyzed materials' structures have to be provided in <a href="input.html"> one of compatible file formats</a>.
+For a detail documentation of the program's functions as well as the graphical user interface (ZeoVis) please check the readme files coming with the source, or simply contact 
+<a href="&#109;&#97;&#105;&#108;&#116;&#111;&#58;mharanczyk&#37;40lbl&#46;gov">Maciej Haranczyk</a>.
+</p>
+
+<p>
+In the following sections, the basic Zeo++ functionality is presented. It can serve as a crash-course. Each section discusses a general syntax requires to call a specific functionality, <i>e.g.</i> calculation of pore diameters or accessible volume, followed by a specific example of EDI zeolite. The CSSR files for EDI zeolites can be downloaded <a href="examples/EDI.cssr">here</a> and immediately tested.
+</p>
+
+<br>
+<h2 class="top">Before you start</h2>
+<p>
+In typical calculations, Zeo++ needs to know radii and masses of atoms involved. Masses and radii for all elements have been encoded. For radii, the set provided by the Cambridge Crystalography Data Center (CCDC) has been implemented and it is used by default. 
+In some cases, however, the to-be-analyzed system has atoms, which names do not correspond to known elements, <i>e.g.</i> "Atm1" or "N12", or simple the default values needs to be overriden. In these cases, the user can define radii and masses by providing additional files. Otherwise, the code has to be executed with additional "-nomass" and/or "-nor" parameters.
+<br>
+The format of the mass and radii files is simple. In each line, in two columns, atom name and the corresponding, respectively, mass or radius is specified. The corresponding, respectively, "mass.mass" and "rad.rad" files are specified during the execution of the code:
+<kbd>
+./network -r rad.rad -mass mass.mass  ...
+</kbd>
+</p>
+<p>
+Often, the to-be-analyzed structure files come directly from molecular simulations use augmented atom names, <i>e.g.</i> "O_12" or "N12". Providing the required radii for each of the names can be teadious. Fortunatelly, Zeo++ can strip all additional characteres following the atom name if the following argument is used:
+<br>
+<kbd>
+./network -stripatomnames  ...
+</kbd>
+</p>
+<p class="announce">
+<b>Warning: </b> The Voronoi decomposition underlying majority of algorithms implemented in Zeo++ can be performed by either using radii of atom or not. By default, radii are used and the Voronoi decomposition is approximated through the radical approximation. The latter can lead to errors in predicted pore dimaters and pore accessiblity if the system contains atoms of unequal radii. In these cases, <b> we strongly advise to run the code with additonal "-ha" parameter, which should decrease maximum expected errors to below 0.1 Ang.</b>   
+Alternatively, point particle approximation can be used (all atomic radii set to zero) when "-nor" parameter is used.
+</p>
+<br>
+
+<h2 class="top">Examples</h2>
+
+<p>Examples discussed in this document:
+<a href="examples.html#res">Pore diameters</a> |
+<a href="examples.html#chan">Dimensionality of channels</a> |
+<a href="examples.html#sa">Surface area</a> |
+<a href="examples.html#vol">Accessible volume</a> |
+<a href="examples.html#povol">Probe-occupiable volume</a> |
+<a href="examples.html#psd">Pore size distribution</a> |
+<a href="examples.html#ray">Stochastic ray tracing</a> |
+<a href="examples.html#block">Blocking spheres</a> |
+<a href="examples.html#grid">Distance grids</a> |
+<a href="examples.html#strinfo">Structure analysis</a> |
+<a href="examples.html#nt2">Accessing the structure and Voronoi network data</a> |
+</p>
+<p>If you wish to use other Zeo++ functionality, <i>i.e.</i> diversity selection, will you please contact 
+<a href="&#109;&#97;&#105;&#108;&#116;&#111;&#58;mharanczyk&#37;40lbl&#46;gov">Maciej Haranczyk</a>.
+</p>
+<p>
+Please note that the examples discussed below are run using the default CCDC radii. In case of all silicious zeolite EDI, radii of O and Si atoms are 1.52 and 2.1 Ang, respectively. Therefore, the high accuracy "-ha" flag is used. 
+</p>
+<br>
+<a name="res"></a>
+<h2 class="top">Pore diameters</h2>
+
+<p>
+To calculate diameters of the largest included sphere, free sphere and included sphere along free sphere path please use the following syntax:
+</p>
+
+<kbd>
+./network -ha -res output_file.res input_structure.cssr
+</kbd>
+<p>
+As the result output_file.res is written. It contains three numbers, diameters of, respectively, the largest included sphere, the largest free sphere and the largest included sphere along free sphere path. In fact, filename output_file.res is optional. If it is not provided, the results are written to input_structure.res
+</p>
+<p>Examples:</p>
+<samp>
+./network -ha -res EDI.cssr
+</samp>
+<p>gives the following results in the EDI.res file:</p>
+<pre>
+     EDI.res    4.89082 3.03868  4.81969
+</pre>
+<p>The first column containing the filename may seem redundant. However, it turns very useful when hundreds of .res files are catenated into large data files (For example, cat *.res > final_results_table.txt). 
+The output filename can be changed. For example, the results will be written to EDI_output.res file, if the following parameters are used:</p>
+<samp>
+./network -ha -res EDI_output.res EDI.cssr
+</samp>
+<p>There is also an alternative option to print extended output, "-resex", which provides the largest free and included sphere diameters for each of crystalographic directions (see original Zeo++ publication for details).
+
+<br><br>
+<a name="chan"></a>
+<h2 class="top">Channel identification and dimensionality</h2>
+
+<p>
+For a given spherical probe of a radius <i>probe_radius</i>, Zeo++ can analyze the void space accessible to this probe. Each identified channel system is characterized by dimensionality as well as Di, Df and Dif. Syntax: 
+</p>
+
+<kbd>
+./network -chan probe_radius input_structure.cssr
+</kbd>
+<p>An example analysis for a probe of radius of 1.5A roughly corresponding to CO2:</p>
+<samp>
+./network -ha -chan 1.5 EDI.cssr
+</samp>
+<p>gives the following results saved in the EDI.chan file:</p>
+<pre>
+EDI.chan   1 channels identified of dimensionality 1
+Channel  0  4.89082  3.03868  4.89082
+</pre>
+<p> The default output filename (here EDI.chan) can be changed to another filename, EDI_output.chan, by using: </p>
+<samp>
+./network -ha -chan 1.5 EDI_output.chan EDI.cssr
+</samp>
+
+<br><br>
+<a name="sa"></a>
+<h2 class="top">Surface area</h2>
+
+<p>
+Zeo++ can calculate surface area accessible to a spherical probe of a radius <i>probe_radius</i> (to be exact, it is the surface accessible to the center of the probe). The calculation is performed in two steps. First, the accessibility of pores in determined. Then, a Monte Carlo sampling procedure is employed to integrate surface area. The radii used in both steps do not have to be the same number though there are certain limitations discussed below. Syntax: 
+</p>
+
+<kbd>
+./network -sa chan_radius probe_radius num_samples outputfile.sa input_structure.cssr
+</kbd>
+
+<p>chan_radius is the radius of a probe used to determine accessibility of the void space. probe_radius is the radius of a probe used in Monte Carlo sampling of surface (probe_radious has to be equal or smaller than chan_radius, equal is advised unless you are a "pro" user). Variable num_samples sets number of MC samples per atom. The outputfile.sa, which is the name of a file to which results are to be written is optional. If not provided, by default, the output will be written to input_structure.sa. 
+</p>
+<p>
+An example analysis of calculation of surface area accessible to a probe of radius of 1.2A (again, it is advised to keep chan_radius=probe_radius):
+</p>
+<samp>
+./network -ha -sa 1.2 1.2 2000 EDI.cssr
+</samp>
+<p>gives the EDI.sa file containing:</p>
+<pre>
+@ EDI.sa Unitcell_volume: 307.484   Density: 1.62239   <br>
+ASA_A^2: 60.7713 ASA_m^2/cm^3: 1976.4 ASA_m^2/g: 1218.21 <br>
+NASA_A^2: 0 NASA_m^2/cm^3: 0 NASA_m^2/g: 0
+</pre>
+<p>where accessible surface area (ASA) and non-accessible surface area (NASA, corresponding to surface area inside inaccessible pockets) is provided in different units (respectively, surface area per unit cell, surface area in square meters per volume (in cubic cm) and mass (in grams) of a material).
+The output is formated as a single line starting with "@". This is to facilitate work with many output files, which can be converted into a single summary file by one simple command. For example:
+<samp>
+grep "@" *.sa > final_summary_file.txt
+</samp>
+</p>
+<p>
+The newer versions of Zeo++ has additional information about the surface area. Contributions to ASA and NASA are printed for each channel and pocket, respectively.
+</p>
+<pre>
+Number_of_channels: 1 Channel_surface_area_A^2: 60.7713
+Number_of_pockets: 0 Pocket_surface_area_A^2:
+</pre>
+
+
+<br><br>
+<a name="vol"></a>
+<h2 class="top">Accessible volume</h2>
+<p>
+Accessible volume is defined here as the volume available to the center of spherical probe.
+The syntax of a command to calculate accessible volume is similar syntax of surface area calculation (with the same recommendation to keep chan_radius and probe_radius equal):
+</p>
+<kbd>
+./network -vol chan_radius probe_radius num_samples outputfile.vol input_structure.cssr
+</kbd>
+<p>
+However, in this case the num_samples variable sets a number of Monte Carlo samples per unit cell. The outfile.vol parameter, which is the name of a file to which results are to be written, is optional.
+</p>
+
+<p>
+An example calculation of accessible volume accessible to a probe of radius of 1.2A:
+</p>
+<samp>
+./network -ha -vol 1.2 1.2 50000 EDI.cssr
+</samp>
+<p>gives the EDI.vol file containing:</p>
+<pre>
+@ EDI.vol Unitcell_volume: 307.484   Density: 1.62239   <br>
+AV_A^3: 22.6493 AV_Volume_fraction: 0.07366 AV_cm^3/g: 0.0454022 <br>
+NAV_A^3: 0 NAV_Volume_fraction: 0 NAV_cm^3/g: 0
+</pre>
+<p>where accessible volume (AV) and non-accessible volume (NAV, corresponding to volume of non-accessible pockets) is provided in three different units: respectively, volume per unit cell, void fraction and volume per mass of a material. 
+Again, similarly to the output of surface area calculation the format is single line starting with "@" character.
+</p>
+<p>
+The newer versions of Zeo++ has additional information about the accessible volume. Contributions to AV and NAV are printed for each channel
+and pocket, respectively.
+</p>
+<pre>
+Number_of_channels: 1 Channel_volume_A^3: 22.6493
+Number_of_pockets: 0 Pocket_volume_A^3:
+</pre>
+
+<br><br>
+<a name="povol"></a>
+<h2 class="top">Probe-occupiable volume</h2>
+<p>
+Probe-occupiable volume calculation redefines the quantity as the material's volume accessible to the entire volume of the spherical probe used (please see the corresponding article listed in the Documentation tab).  
+The syntax of a command to calculate probe-occupiable volume is similar syntax of accessible volume calculation (with the same recommendation to keep chan_radius and probe_radius equal):
+</p>
+<kbd>
+./network -volpo chan_radius probe_radius num_samples outputfile.vol input_structure.cssr
+</kbd>
+<p>
+The num_samples variable sets a number of Monte Carlo samples per unit cell. The outfile .volpo parameter, which is the name of a file to which results are to be written, is optional.
+</p>
+
+<p>
+An example calculation of probe-occupiable volume accessible to a probe of radius of 1.2A:
+</p>
+<samp>
+./network -ha -volpo 1.2 1.2 50000 EDI.cssr
+</samp>
+<p>gives the EDI.volpo file containing:</p>
+<pre>
+@ EDI.volpo Unitcell_volume: 307.484   Density: 1.62239 <br>
+POAV_A^3: 131.284 POAV_Volume_fraction: 0.42696 POAV_cm^3/g: 0.263168 <br>
+PONAV_A^3: 0 PONAV_Volume_fraction: 0 PONAV_cm^3/g: 0
+</pre>
+<p>where accessible proce-occupiable volume (POAV) and non-accessible probe-occupiable volume (PONAV, corresponding to volume of non-accessible pockets) is provided in three different units: respectively, volume per unit cell, void fraction and volume per mass of a material.
+Again, similarly to the output of surface area calculation the format is starting with "@" character to facilitate using of grep command in UNIX scripting.
+</p>
+
+
+<br><br>
+<a name="psd"></a>
+<h2 class="top">Pore size distribution</h2>
+<p>
+The syntax of a command to calculate pore size distribution histogram is similar syntax of accessible volume (with the same recommendation to keep chan_radius and probe_radius equal):
+</p>
+<kbd>
+./network -psd chan_radius probe_radius num_samples outputfile.psd input_structure.cssr
+</kbd>
+<p>
+where num_samples variable sets a number of Monte Carlo samples per unit cell. The outfile.psd parameter, which is the name of a file to which results are to be written, is optional.
+</p>
+
+<p>
+An example calculation of pore size distribution to a probe of radius of 1.2A:
+</p>
+<samp>
+./network -ha -psd 1.2 1.2 50000 EDI.cssr
+</samp>
+<p>gives the EDI.psd_histo file containing histograms. Typically, the "deriviative distribution" (change of accessible volume with respect to probe size) is analyzed and it can be found in the fouth column of the histogram file. By default, histogram has 1000 bins of size of 0.1 Ang (to change these setting, the source code needs to be alterd).</p>
+
+<p class="announce">
+<b>Warning: </b> We recently discovered a flaw in our PSD algorithm that manifests in a reduced accuracy of PSD peak positions in the case when the probe diameter is significantly smaller than the material's atoms (e.g. when using a 0.01A probe together with "normal" atomic radii, i.e. 1.0-2.0A. We are working to improve our algorithm. Meanwhile, it is advised to use probe radius similar to atomic radii for which one should expect the said 0.1A accuracy in peak positions.
+</p>
+
+<br><br>
+<a name="ray"></a>
+<h2 class="top">Stochastic ray tracing</h2>
+
+<p>
+Stochastic ray tracing histograms provie another approach to create histograms representing the void space. The algorithm shoots random rays through accesible volume of cell until hits atoms, and it records their lenghts to provide the corresponding histogram. The synthax and restrictions on the used probe radii are the same as in the case of accessible volume calculation: 
+</p>
+<kbd>
+./network -ray_atom chan_radius probe_radius num_samples outputfile.ray input_structure.cssr
+</kbd>
+<p>
+</p>
+
+<br><br>
+<a name="block"></a>
+<h2 class="top">Blocking spheres</h2>
+
+<p>
+Blocking spheres are used to exclude inaccessible regions in Monte Carlo simulations of adsorption. Zeo++ can identify inaccessible regions and generate the corresponding spheres in RASPA format. The synthax and restrictions on the used probe radii are the same as in the case of accessible volume calculation:
+</p>
+<kbd>
+./network -ha -block probe_radius num_samples input_structure.cssr
+</kbd>
+<p>
+</p>
+
+<br><br>
+<a name="grid"></a>
+<h2 class="top">Distance grids</h2>
+
+<p>
+Distance grids in which each grid point is assigned the distance to the surface of its nearest atom (alternatively, to the center of the nearest atom if "-nor" flag is specified) are often used for visualization. Zeo++ can save grids in both Gaussian Cube format and BOV format. The first one can be easily displayed in VMD while the second one is suitable for VisIT. The synthax is respectively:
+</p>
+<kbd>
+./network -gridG input_structure.cssr <br>
+./network -gridBOV input_structure.cssr <br>
+</kbd>
+<p>
+"-grid" will save the grid file in .cube format using Ang as units; to generate the cube file in Bohr units, use "-gridGBohr" instead. "-gridBOV" will save two files: one .bov header file and other binary data file. 
+By default, the grid resolution is set to 0.2 Ang. It can be changed by altering the source code (grid.cc).
+</p>
+
+<br><br>
+<a name="strinfo"></a>
+<h2 class="top">Structure analysis</h2>
+
+<p>
+Structure information can be determined from atom connectivity matrix. Zeo++ can identify and count the number of molecules framework present in the provinded structure. Furthermore, dimensionality of each framework is determined. The synthax is :
+</p>
+<kbd>
+./network -strinfo input_structure.cssr <br>
+</kbd>
+<p>
+The output is saved in .strinfo file. 
+<br>
+To count number of Open Metal Site in a provided MOF structure, the following synthax can me used:
+<kbd>
+./network -oms input_structure.cssr <br>
+</kbd>
+
+</p>
+
+<br><br>
+<a name="nt2"></a>
+<h2 class="top">Accessing structure data and the Voronoi network</h2>
+
+<p>Zeo++ can be also used to convert an input file with structure, i.e. CSSR file, to other file formats. Two formats with Cartesian coordinates of atoms are available: standard .xyz format used in the most of molecular visualization codes and our .v1 format. The latter is similar to .xyz but also contains unit cell vectors. To generate .xyz and .v1 files for our example EDI.cssr file, please use:
+</p>
+<samp> 
+./network -xyz EDI.cssr
+<br>
+./network -v1 EDI.cssr
+</samp>
+<p>
+The Voronoi network obtained for a given structure can be saved in our .nt2 file format. It contains information on all nodes and edges in the network. Each nodes is characterized by a position in Cartesian coordinates, a distance to the nearest atom, node connectivity. Each edge is characterized by a pair of nodes its connected to, its restricting distances and lenght. To save .nt2 files for the example EDI.cssr file use:
+</p>
+<samp>
+./network -r -nt2 EDI.cssr
+</samp>
+<p>
+Please note that "-r" parameter requests radial Voronoi decomposition, i.e. atomic radii are used. The distances to atoms in the resulting .nt2 files will then be the distances to the atomic surface. Specifying "-nor" will request standard Voronoi decomposition with point particles in place of atoms. Then, the distances will be defined as distances to the center of atoms.
+</p>
+
+
+<!--
+Network commandline invocation syntax:
+
+./network [-cssr [outputfile_cssr]] 
+	  [-v1 [outputfile_v1]] 
+	  [-xyz [outputfile_xyz]] 
+	  [-nt2 [outputfile_nt2]]
+          [-res [outputfile_res]] 
+	  [-zvis [outputfile_zvis]] 
+	  [-axs probe_radius [outputfile_axs]] 
+	  [-sa chan_radius probe_radius num_samples [outputfile_sa]] 
+	  [-vol chan_radius probe_radius num_samples [outputfile_vol]]
+	  [-chan probe_radius [outputfile_chan]] 
+	  [-r [radfile]] 
+	  INPUTFILE
+
+Note: For all of the program features that have an optional outputfile, the output is written to the filename when it is provided. Otherwise,
+the output is  written to ($file_prefix).($feature_name). For instance, if the provided file is ABW.cuc and -cssr is specified w/o any output file,
+the resulting input will be written by default to ABW.cssr
+
+-cssr [outputfile_cssr] : Output a .cssr representation of the input file. 
+
+-v1   [outputfile_v1]   : Output a .v1   representation of the input file.  
+
+-xyz  [outputfile_xyz]  : Output a .xyz  representation of the input file.   
+
+-nt2  [outputfile_nt2]  : Output a .nt2  representation of the Voronoi network for the given unit cell.   
+
+-r    [radfile] : Use radii while performing the Vornoi decomposition. If no .rad file is provided,
+   	          default radii contained within the program are used, if possible. If a .rad 
+	          file is provided, the default radii are overriden. The .rad file consists of 
+		  two columns, containing the atomic types and radii respectively. For an example
+		  file, please refer to example.rad.
+		  If no -r option is specified, all of the atoms are treated as having a radius of 0.
+		  
+-mass massfile : Replace the built-in mass table with that provided in a .mass file. The .mass file consists
+      	       	 of two columns, containing the atomic types and masses respectively. For an example file,
+		 please refer to example.mass
+
+
+-res  [outputfile_res] : Output the maximum free sphere results to the provided file.  
+      		       	 Format is: maxIncDiam maxDiamX maxDiamY maxDiamZ incDiamX incDiamY incDiamZ xflag yflag zflag    
+	       	       	 where    xflag/yflag/zflag = t if NtoN and f otherwise, maxDiamX/Y/Z are the maximum free sphere radii
+			 for each direction and incDiamX/Y/Z are the maximum included diameters for the maximum free sphere paths.
+
+-zvis [outputfile_zvis] : Output a file used by ZeoVis to depict important features about the atomic network and Voronoi network.
+
+-axs probe_radius [outputfile_axs] : Outputs a file with N lines, where N = # of Voronoi nodes.  
+     		  		     Each line is true or false, representing the accessibility of the ith Voronoi node.
+
+-sa chan_radius probe_radius num_samples_per_atom  [outputfile_sa]  : Determine the amount of accessible surface area. The accessibility of nodes is determined
+    			     		 		     	      using $chan_radius, and probe-atom overlap is determiend using $probe_radius. A total of
+							     	      $num_samples_per_atom points are sampled at a distance of $probe_radius from each atom and Monte
+							     	      Carlo integration is used to determine the final result.  
+
+-vol chan_radius probe_radius num_samples [outputfile_sa]  : Determine the amount of accessible volume. The accessibility of nodes is determined
+    			     		 		     using $chan_radius, and probe-atom overlap is determined using $probe_radius. A total of
+							     $num_samples points are sampled across the unit cell and Monte Carlo integration is used
+							     to determine the final result. 
+
+-sub [outputfile_sub]        : Attempt to replace every other Si atom within the network with an Al atom consistently.
+     			       If successful, write the resulting network to a .cssr file. No output is written if the substitution fails. 
+     			      
+
+-fsub frac [outputfile_fsub] : Attempt to randomly replace $frac of Si atoms within the network with an Al atom consistently. The specified fraction must not exceed 0.5.
+      	   		       If successful, write the resulting network to a .cssr file. No output is written if the substitution fails. 
+
+-chan probe_radius  [outputfile_chan]      : Determine the channels available to a probe of size $probe_radius. 
+      		  	       	  	     Outputs a file used by ZeoVis to draw the resulting channels.
+
+INPUTFILE    : Must be in the .cuc, .cssr or .v1 file format.
+
+-->
+
+
+	</div>
+	<hr />
+	<div id="foot">
+		<div class="links">
+	<!--		<a href="map.html">Site Map</a> | -->
+			<a href="aboutweb.html">About the website</a>
+		</div>
+		<div class="trail">
+			Website maintained by <a href="&#109;&#97;&#105;&#108;&#116;&#111;&#58;mharanczyk&#37;40lbl&#46;gov">Maciej Haranczyk</a>
+		</div>
+	</div>
+</div>
+</body>
+</html>

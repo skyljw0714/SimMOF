@@ -1,14 +1,23 @@
 import os
+import json
 import shutil
 import subprocess
 from pathlib import Path
-from config import LAMMPS_MOLTEMPLATE_SCRIPT, LAMMPS_MOLTEMPLATE_SH
+from config import LAMMPS_MOLTEMPLATE_SCRIPT, LAMMPS_MOLTEMPLATE_SH, LLM_DEFAULT
+from core.timing import timed_call
 
 LAMMPS_INTERFACE_COMMAND = "lammps-interface"
-LAMMPS_PACKMOL_TOLERANCE = 2.5
+LAMMPS_PACKMOL_TOLERANCE = 3.0
 LAMMPS_SUPERCELL_CUTOFF = 12.5
 LAMMPS_CHARGED_PAIR_CUTOFF = 10.0
 LAMMPS_KSPACE_ACCURACY = "1.0e-4"
+
+
+def _literature_rag_disabled() -> bool:
+    return (
+        os.getenv("SIMMOF_DISABLE_LITERATURE_RAG", "").strip().lower() in {"1", "true", "yes", "on"}
+        or os.getenv("SIMMOF_LAMMPS_LITERATURE_RAG", "1").strip().lower() in {"0", "false", "no", "off"}
+    )
 
 
 def _run_command(cmd: str, cwd: str, shell: bool = True):
@@ -103,6 +112,121 @@ def cif_has_atom_site_charge(cif_path: str) -> bool:
     return "_atom_site_charge" in text
 
 
+def _fix_pacman_cif_loops(cif_path: Path) -> None:
+    import re
+    text = cif_path.read_text(errors="replace")
+    fixed = re.sub(
+        r"('x, y, z'\s*\n)(\s*_atom_site_)",
+        r"\1\nloop_\n\2",
+        text,
+    )
+    if fixed != text:
+        cif_path.write_text(fixed)
+
+
+def _run_pacman_on_cif(cif_path: Path) -> bool:
+    import shutil
+    try:
+        from PACMANCharge.pmcharge import predict
+        predict(str(cif_path), charge_type="DDEC6")
+        pacman_out = Path(str(cif_path).split(".cif")[0] + "_pacman.cif")
+        if not pacman_out.exists():
+            print("[Charge] PACMAN output file not found")
+            return False
+        shutil.copy2(pacman_out, cif_path)
+        pacman_out.unlink(missing_ok=True)
+        _fix_pacman_cif_loops(cif_path)
+        has_charge = cif_has_atom_site_charge(str(cif_path))
+        if has_charge:
+            print(f"[Charge] PACMAN DDEC6 charges written → {cif_path}")
+        else:
+            print("[Charge] PACMAN ran but _atom_site_charge not found in output")
+        return has_charge
+    except Exception as e:
+        print(f"[Charge] PACMAN failed: {e}")
+        return False
+
+
+def _eqeq_charges_valid(cif_path: Path) -> bool:
+    import math
+    text = cif_path.read_text(errors="ignore")
+    if "_atom_site_charge" not in text:
+        return False
+    in_loop = False
+    for line in text.splitlines():
+        if "_atom_site_charge" in line:
+            in_loop = True
+            continue
+        if in_loop:
+            parts = line.split()
+            if not parts:
+                continue
+            try:
+                val = float(parts[-1])
+                if math.isfinite(val) and abs(val) > 1e-10:
+                    return True
+            except (ValueError, IndexError):
+                pass
+    return False
+
+
+def _run_eqeq_on_cif(cif_path: Path) -> Path:
+    import glob
+    import shutil
+    from config import EQEQ_DIR
+
+    eqeq_bin = EQEQ_DIR / "eqeq"
+    if not eqeq_bin.exists():
+        raise FileNotFoundError(f"EQeq executable not found: {eqeq_bin}")
+
+    tmp_cif = EQEQ_DIR / cif_path.name
+    shutil.copy2(cif_path, tmp_cif)
+
+    try:
+        result = subprocess.run(
+            [str(eqeq_bin), str(tmp_cif.name)],
+            cwd=str(EQEQ_DIR),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"EQeq failed:\n{result.stderr}")
+
+        pattern = str(EQEQ_DIR / f"{tmp_cif.name}_EQeq_*.cif")
+        matches = glob.glob(pattern)
+        if not matches:
+            raise FileNotFoundError(f"EQeq output CIF not found (pattern: {pattern})")
+
+        out_eqeq = Path(sorted(matches)[-1])
+        out_charged = cif_path.parent / (cif_path.stem + "_eqeq.cif")
+        shutil.copy2(out_eqeq, out_charged)
+        print(f"[Charge] EQeq charged CIF → {out_charged}")
+        return out_charged
+    finally:
+        tmp_cif.unlink(missing_ok=True)
+        for f in EQEQ_DIR.glob(f"{cif_path.name}_EQeq_*.cif"):
+            f.unlink(missing_ok=True)
+
+
+def _apply_eqeq_charges_to_cif(cif_path: Path) -> bool:
+    import shutil
+
+    try:
+        charged_cif = _run_eqeq_on_cif(cif_path)
+        if not _eqeq_charges_valid(charged_cif):
+            print("[Charge] EQeq output did not contain valid charges")
+            charged_cif.unlink(missing_ok=True)
+            return False
+        shutil.copy2(charged_cif, cif_path)
+        charged_cif.unlink(missing_ok=True)
+        _fix_pacman_cif_loops(cif_path)
+        print(f"[Charge] EQeq charges written → {cif_path}")
+        return True
+    except Exception as e:
+        print(f"[Charge] EQeq failed: {e}")
+        return False
+
+
 def generate_lammps_inputs(
     working_dir: str,
     mof_name: str,
@@ -112,6 +236,8 @@ def generate_lammps_inputs(
     num_guest: int = 1,
     job_name: str = "",
     simulation_input: dict = None,
+    charge_method: str = "auto",
+    context: dict = None,
 ):
     from ase.io import read, write
 
@@ -132,6 +258,7 @@ def generate_lammps_inputs(
     )
     from .input_trappe import generate_lt
     from .parser import make_group_commands, match_trappe_abbreviation
+    from .guest_ff import generate_guest_lt, llm_guest_ff_from_query
 
     working_dir = str(working_dir)
     os.makedirs(working_dir, exist_ok=True)
@@ -157,63 +284,175 @@ def generate_lammps_inputs(
     unit_cif_file = str(Path(working_dir) / f"{mof_name}.cif")
     supercell_cif_file = None
 
-    if not is_mof_only:
-        original_guest_xyz = os.path.join(working_dir, f"{guest_name}.xyz")
+    if not cif_has_atom_site_charge(unit_cif_file):
+        if charge_method == "pacman":
+            print("[Charge] pacman requested — running PACMAN to predict DDEC6 charges...")
+            ok = _run_pacman_on_cif(Path(unit_cif_file))
+            if not ok:
+                print("[Charge] PACMAN failed — falling back to EQeq")
+                if _apply_eqeq_charges_to_cif(Path(unit_cif_file)):
+                    charge_method = "eqeq"
+                else:
+                    print("[Charge] EQeq fallback failed — falling back to no charges")
+                    charge_method = "none"
+        elif charge_method == "ddec":
+            print("[Charge] ddec requested — running VASP + CHARGEMOL for DFT-DDEC6 charges...")
+            from charge.ddec6 import run_ddec6_on_cif
+            ok = run_ddec6_on_cif(Path(unit_cif_file), context or {})
+            if not ok:
+                print("[Charge] DFT-DDEC6 failed — falling back to EQeq")
+                if _apply_eqeq_charges_to_cif(Path(unit_cif_file)):
+                    charge_method = "eqeq"
+                else:
+                    print("[Charge] EQeq fallback failed — falling back to no charges")
+                    charge_method = "none"
+        elif charge_method == "eqeq":
+            print("[Charge] eqeq requested — running EQeq to assign framework charges...")
+            if not _apply_eqeq_charges_to_cif(Path(unit_cif_file)):
+                print("[Charge] EQeq failed — falling back to no charges")
+                charge_method = "none"
 
     print("[CIF] Checking CIF...")
     if cif_has_atom_site_charge(unit_cif_file):
-        print("[CIF] Detected _atom_site_charge; skipping ASE cleaning to preserve DDEC charges.")
+        print("[CIF] Detected _atom_site_charge; skipping ASE cleaning to preserve charges.")
     else:
         print("[CIF] Cleaning CIF with ASE...")
         clean_cif_with_ase(unit_cif_file, unit_cif_file)
 
+    guest_ff_family = "TraPPE"
+
     if not is_mof_only:
-        molecule_name = match_trappe_abbreviation(guest_name)
-        print("[TRAPPE] mapped guest:", guest_name, "→", molecule_name)
-
-        TOP_TRAPPE = str(TRAPPE_TOP_FILE)
-        from input.lammps.trappe_ua_convert import convert_allatom_xyz_to_trappe_ua_xyz, needs_ua_conversion
-
-        guest_xyz_for_packmol = os.path.join(working_dir, f"{molecule_name}.xyz")
-        guest_xyz_for_lt = os.path.join(working_dir, f"{molecule_name}.xyz")
         original_guest_xyz = os.path.join(working_dir, f"{guest_name}.xyz")
 
-        if os.path.abspath(original_guest_xyz) == os.path.abspath(guest_xyz_for_packmol):
-            print("[TRAPPE] guest xyz already TRAPPE-compatible filename, skip.")
+        guest_ff_rag_hints = ""
+        if _literature_rag_disabled():
+            print("[RAG] guest FF literature hints disabled by environment")
         else:
-            if needs_ua_conversion(molecule_name):
-                xyz_elem = os.path.join(working_dir, f"{molecule_name}.xyz")
-                xyz_site = os.path.join(working_dir, f"{molecule_name}.site.xyz")
-
-                convert_allatom_xyz_to_trappe_ua_xyz(
-                    original_xyz=original_guest_xyz,
-                    top_file=TOP_TRAPPE,
-                    resi_name=molecule_name,
-                    out_xyz=xyz_elem,
-                    out_xyz_site=xyz_site,
-                    cc_cutoff=1.85,
+            try:
+                from rag.agent import RagAgent
+                _rag_ctx_guest = {
+                    "job_name": job_name,
+                    "mof": mof_name,
+                    "guest": guest_name or "",
+                    "property": property_name,
+                    "query_text": query_text or "",
+                }
+                _guest_ff_agent = RagAgent(agent_name="RagAgent")
+                _guest_ff_out = timed_call(
+                    "RAG.get_lammps_ff_hints_guest",
+                    _guest_ff_agent.run_for_lammps_ff,
+                    _rag_ctx_guest,
+                    top_files=5,
+                    context=_rag_ctx_guest,
+                    extra={"parent_agent": "LAMMPSInputAgent"},
                 )
+                guest_ff_rag_hints = (_guest_ff_out.get("ff_hints") or "").strip()
+            except Exception as _e:
+                print(f"[guest_ff] RAG hints error: {_e}")
 
-                guest_xyz_for_packmol = xyz_elem
-                guest_xyz_for_lt = xyz_site
-
-                print(f"[TRAPPE-UA] wrote packmol xyz: {xyz_elem}")
-                print(f"[TRAPPE-UA] wrote LT xyz    : {xyz_site}")
-            else:
-                shutil.copyfile(original_guest_xyz, guest_xyz_for_packmol)
-                print(f"[TRAPPE] copied {original_guest_xyz} → {guest_xyz_for_packmol}")
-
-        print("[TraPPE] Generating guest LT file...")
-        generate_lt(
-            molecule=molecule_name,
-            xyz_file=guest_xyz_for_lt,
-            top_file=str(TRAPPE_TOP_FILE),
-            par_file=str(TRAPPE_PAR_FILE),
-            output_file=str(Path(working_dir) / f"{molecule_name}.lt"),
+        guest_ff_family = llm_guest_ff_from_query(
+            guest_name=guest_name,
+            query_text=query_text or "",
+            rag_hints=guest_ff_rag_hints,
         )
+        print(f"[guest_ff] selected family: {guest_ff_family}")
+
+        if guest_ff_family == "TraPPE":
+            molecule_name = match_trappe_abbreviation(guest_name)
+            print("[TRAPPE] mapped guest:", guest_name, "→", molecule_name)
+
+            TOP_TRAPPE = str(TRAPPE_TOP_FILE)
+            from input.lammps.trappe_ua_convert import convert_allatom_xyz_to_trappe_ua_xyz, needs_ua_conversion
+
+            guest_xyz_for_packmol = os.path.join(working_dir, f"{molecule_name}.xyz")
+            guest_xyz_for_lt = os.path.join(working_dir, f"{molecule_name}.xyz")
+
+            if os.path.abspath(original_guest_xyz) == os.path.abspath(guest_xyz_for_packmol):
+                print("[TRAPPE] guest xyz already TRAPPE-compatible filename, skip.")
+            else:
+                if needs_ua_conversion(molecule_name):
+                    xyz_elem = os.path.join(working_dir, f"{molecule_name}.xyz")
+                    xyz_site = os.path.join(working_dir, f"{molecule_name}.site.xyz")
+
+                    convert_allatom_xyz_to_trappe_ua_xyz(
+                        original_xyz=original_guest_xyz,
+                        top_file=TOP_TRAPPE,
+                        resi_name=molecule_name,
+                        out_xyz=xyz_elem,
+                        out_xyz_site=xyz_site,
+                        cc_cutoff=1.85,
+                    )
+
+                    guest_xyz_for_packmol = xyz_elem
+                    guest_xyz_for_lt = xyz_site
+
+                    print(f"[TRAPPE-UA] wrote packmol xyz: {xyz_elem}")
+                    print(f"[TRAPPE-UA] wrote LT xyz    : {xyz_site}")
+                else:
+                    shutil.copyfile(original_guest_xyz, guest_xyz_for_packmol)
+                    print(f"[TRAPPE] copied {original_guest_xyz} → {guest_xyz_for_packmol}")
+
+            print("[TraPPE] Generating guest LT file...")
+            generate_lt(
+                molecule=molecule_name,
+                xyz_file=guest_xyz_for_lt,
+                top_file=str(TRAPPE_TOP_FILE),
+                par_file=str(TRAPPE_PAR_FILE),
+                output_file=str(Path(working_dir) / f"{molecule_name}.lt"),
+            )
+
+        else:
+            molecule_name = guest_name.replace(" ", "_").replace("-", "_")
+            guest_xyz_for_packmol = original_guest_xyz
+            lt_file = str(Path(working_dir) / f"{molecule_name}.lt")
+            ff_workdir = str(Path(working_dir) / f"{molecule_name}_{guest_ff_family}_work")
+
+            print(f"[{guest_ff_family}] Generating guest LT file...")
+            generate_guest_lt(
+                molecule_name=molecule_name,
+                guest_xyz=original_guest_xyz,
+                output_lt=lt_file,
+                ff_family=guest_ff_family,
+                workdir=ff_workdir,
+                top_file=str(TRAPPE_TOP_FILE) if guest_ff_family == "TraPPE" else None,
+                par_file=str(TRAPPE_PAR_FILE) if guest_ff_family == "TraPPE" else None,
+            )
+            print(f"[{guest_ff_family}] .lt file generated: {lt_file}")
+
+    ff_rag_hints = ""
+    _cached_lammps_rag = (context or {}).get("lammps_rag_hints") if context else None
+    if _cached_lammps_rag and isinstance(_cached_lammps_rag, dict):
+        ff_rag_hints = (_cached_lammps_rag.get("ff_hints") or "").strip()
+        print("[RAG] FF hints from cache" if ff_rag_hints else "[RAG] no FF hints in cache")
+    elif _literature_rag_disabled():
+        print("[RAG] FF literature hints disabled by environment")
+    else:
+        try:
+            from rag.agent import RagAgent
+
+            _rag_ctx = {
+                "job_name": job_name,
+                "mof": mof_name,
+                "guest": guest_name or "",
+                "property": property_name,
+                "query_text": query_text or "",
+            }
+            _ff_agent = RagAgent(agent_name="RagAgent")
+            _ff_out = timed_call(
+                "RAG.get_lammps_ff_hints",
+                _ff_agent.run_for_lammps_ff,
+                _rag_ctx,
+                top_files=5,
+                context=_rag_ctx,
+                extra={"parent_agent": "LAMMPSInputAgent"},
+            )
+            ff_rag_hints = (_ff_out.get("ff_hints") or "").strip()
+            print("[RAG] FF hints enabled" if ff_rag_hints else "[RAG] no FF hints found")
+        except Exception as _e:
+            print(f"[RAG] FF hints disabled due to error: {_e}")
 
     print("[lammps-interface] inferring options from query...")
-    lammps_interface_option = llm_option_from_query(query_text)
+    lammps_interface_option = llm_option_from_query(query_text, rag_hints=ff_rag_hints)
     print("[lammps-interface options]", lammps_interface_option)
     print(f"[lammps-interface] unit-cell CIF = {unit_cif_file}")
 
@@ -334,7 +573,21 @@ def generate_lammps_inputs(
     else:
         print("[Run] 'run.in.EXAMPLE' not found")
 
-    charged = detect_charged_system(Path(working_dir) / "system.data")
+    charged_from_data = detect_charged_system(Path(working_dir) / "system.data")
+
+    if charge_method == "none":
+        charged = False
+        print("[Charge] method=none — LJ-only (lj/cut)")
+    elif charge_method in ("cif", "eqeq", "pacman", "ddec"):
+        charged = charged_from_data or True
+        print(f"[Charge] method={charge_method} — lj/cut/coul/long + kspace pppm")
+        if charge_method in ("eqeq", "pacman", "ddec") and not charged_from_data:
+            print(f"[Charge] WARNING: {charge_method} requested but no charges in system.data. "
+                  "Pre-compute charges and add to CIF before re-running.")
+    else:
+        charged = charged_from_data
+        print(f"[Charge] auto-detected charged={charged} from system.data")
+
     patch_pair_kspace_after_read_data(
         Path(working_dir) / "system.in",
         charged,
@@ -356,7 +609,7 @@ def generate_lammps_inputs(
     print("[Run Section] Generating run commands into system.in ...")
 
     if query_text:
-        simulation_description = f"[JOB_NAME={job_name}] {query_text}"
+        simulation_description = f"[JOB_NAME={job_name}] [NUM_GUEST_MOLECULES={num_guest}] {query_text}"
     else:
         if is_te:
             simulation_description = f"Simulate thermal expansion of {mof_name} (MOF-only, NPT temperature scan)."
@@ -371,36 +624,131 @@ def generate_lammps_inputs(
         mode = "reproduce"
 
     rag_summaries = ""
-
+    evidence_provider = None
     if mode != "reproduce":
-        try:
-            from rag.agent import RagAgent
+        literature_rag_enabled = not _literature_rag_disabled()
+        manual_rag_enabled = (
+            os.getenv("SIMMOF_LAMMPS_MANUAL_RAG", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+        if not literature_rag_enabled:
+            print(
+                "[RAG] LAMMPS system.in literature hints disabled by "
+                "environment"
+            )
+        if not manual_rag_enabled:
+            print("[RAG] official LAMMPS command hints disabled by environment")
+        if literature_rag_enabled or manual_rag_enabled:
+            def evidence_provider(intent_spec):
+                combined = {"rag_summaries": ""}
+                if literature_rag_enabled:
+                    try:
+                        from rag.agent import RagAgent
 
-            rag_ctx = {
-                "job_name": job_name,
-                "mof": mof_name,
-                "guest": guest_name or "",
-                "property": property_name,
-                "query_text": query_text or "",
-            }
+                        rag_ctx = {
+                            "job_name": job_name,
+                            "mof": mof_name,
+                            "guest": guest_name or "",
+                            "property": property_name,
+                            "query_text": query_text or "",
+                        }
+                        agent = RagAgent(agent_name="RagAgent")
+                        literature_out = timed_call(
+                            "RAG.get_lammps_hints",
+                            agent.run_for_system_in,
+                            rag_ctx,
+                            top_files=5,
+                            category="lammps_input_internal",
+                            context=rag_ctx,
+                            extra={"parent_agent": "LAMMPSInputAgent"},
+                        )
+                        combined["rag_summaries"] = (
+                            literature_out.get("rag_summaries") or ""
+                        ).strip()
+                        if combined["rag_summaries"]:
+                            print("[RAG] system.in hints enabled")
+                        else:
+                            print("[RAG] no relevant hints found")
+                    except Exception as exc:
+                        print(f"[RAG] disabled due to error: {exc}")
 
-            agent = RagAgent(agent_name="RagAgent")
-            out = agent.run_for_system_in(rag_ctx, top_files=5)
-            rag_summaries = (out.get("rag_summaries") or "").strip()
+                if manual_rag_enabled:
+                    from .manual_rag import (
+                        retrieve_lammps_purpose_and_command_hints,
+                    )
 
-            if rag_summaries:
-                print("[RAG] system.in hints enabled")
-            else:
-                print("[RAG] no relevant hints found")
-
-        except Exception as e:
-            print(f"[RAG] disabled due to error: {e}")
+                    command_query = "\n".join(
+                        [
+                            simulation_description,
+                            "",
+                            "PHYSICAL INTENT (command-free):",
+                            json.dumps(
+                                intent_spec or {},
+                                ensure_ascii=True,
+                                sort_keys=True,
+                            ),
+                        ]
+                    )
+                    manual_out = retrieve_lammps_purpose_and_command_hints(
+                        command_query,
+                        llm=LLM_DEFAULT,
+                        top_k=14,
+                        max_chars_per_hit=1400,
+                    )
+                    combined.update(manual_out)
+                    if context is not None:
+                        context["lammps_manual_rag"] = {
+                            "selected_ids": manual_out.get("selected_ids") or [],
+                            "support_ids": manual_out.get("support_ids") or [],
+                            "role_by_id": manual_out.get("role_by_id") or {},
+                            "exact_command_names": manual_out.get(
+                                "exact_command_names"
+                            )
+                            or [],
+                            "evidence_plan": manual_out.get("evidence_plan")
+                            or {},
+                            "evidence_candidates": manual_out.get(
+                                "evidence_candidates"
+                            )
+                            or [],
+                            "dependency_graph": manual_out.get(
+                                "dependency_graph"
+                            )
+                            or {},
+                            "protocol_changes_allowed": bool(
+                                manual_out.get("protocol_changes_allowed")
+                            ),
+                            "selector_error": manual_out.get("selector_error")
+                            or "",
+                            "selector_validation_issue_before_retry": (
+                                manual_out.get(
+                                    "selector_validation_issue_before_retry"
+                                )
+                                or ""
+                            ),
+                            "selector_validation_issue_after_retry": (
+                                manual_out.get(
+                                    "selector_validation_issue_after_retry"
+                                )
+                                or ""
+                            ),
+                        }
+                    if (manual_out.get("formatted_hints") or "").strip():
+                        print("[RAG] official LAMMPS command hints enabled")
+                    else:
+                        print("[RAG] no official LAMMPS command hints found")
+                return combined
 
     generate_system_in(
         property=property_name,
         simulation_description=simulation_description,
         group_definition=group_definitions,
         output_file=str(Path(working_dir) / "system.in"),
+        mode=mode,
         example_text=example_text,
         rag_summaries=rag_summaries,
+        official_command_hints="",
+        evidence_plan={},
+        evidence_provider=evidence_provider,
+        context=context,
     )

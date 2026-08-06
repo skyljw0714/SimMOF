@@ -1,6 +1,7 @@
 import json
 import re
-from config import OPENAI_MODEL_PARSER, TRAPPE_DICT_FILE, get_openai_client
+from config import TRAPPE_DICT_FILE, LLM_DEFAULT
+from core.llm_logging import set_llm_context
 
 def parse_query_with_llm(query: str) -> dict:
     prompt = f"""
@@ -15,16 +16,13 @@ for initializing a LAMMPSAgent. Extract the following fields:
 Return ONLY a valid JSON object. No markdown, no code block, no explanation.
 """
 
-    response = get_openai_client().chat.completions.create(
-        model=OPENAI_MODEL_PARSER,
-        messages=[
-            {"role": "system", "content": "You are a molecular simulation assistant."},
-            {"role": "user", "content": prompt + f"\n\nInput query:\n{query}"}
-        ],
-        temperature=0.0,
-    )
-
-    content = response.choices[0].message.content.strip()
+    from langchain.schema import SystemMessage, HumanMessage
+    set_llm_context("LAMMPSParser", "query_parsing")
+    response = LLM_DEFAULT.invoke([
+        SystemMessage(content="You are a molecular simulation assistant."),
+        HumanMessage(content=prompt + f"\n\nInput query:\n{query}"),
+    ])
+    content = response.content.strip()
 
     match = re.search(r"\{.*\}", content, re.DOTALL)
     if match:
@@ -61,16 +59,13 @@ If there is no exact match, suggest the closest candidate.
 Return ONLY the most appropriate abbreviation (key) as a single line string, with no explanation, value, or formatting.
 """
 
-    response = get_openai_client().chat.completions.create(
-        model=OPENAI_MODEL_PARSER,
-        messages=[
-            {"role": "system", "content": "You are a molecular simulation expert specializing in TRAPPE force field assignment for LAMMPS simulations."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.0,
-    )
-
-    molecule_name = response.choices[0].message.content.strip()
+    from langchain.schema import SystemMessage, HumanMessage
+    set_llm_context("LAMMPSParser", "trappe_abbreviation")
+    response = LLM_DEFAULT.invoke([
+        SystemMessage(content="You are a molecular simulation expert specializing in TRAPPE force field assignment for LAMMPS simulations."),
+        HumanMessage(content=prompt),
+    ])
+    molecule_name = response.content.strip()
     return molecule_name
 
 def count_atoms_in_lt(file_path):
@@ -118,7 +113,6 @@ def make_group_commands(mof_lt, guest_lt):
         group_cmds.append(f"group guest type {' '.join(map(str, guest_types))}")
 
     return mof_atoms, guest_atoms, group_cmds
-
 
 
 

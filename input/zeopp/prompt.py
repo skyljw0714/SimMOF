@@ -31,6 +31,16 @@ Examples:
      "probe_radius": 1.65 ,
      "num_samples": 50000
    }
+
+4. User query: "Calculate the pore size distribution of HKUST-1."
+   Output (JSON):
+   {
+     "MOF": "HKUST-1",
+     "simulation_type": "pore size distribution",
+     "command": "-ha -psd",
+     "probe_radius": 1.2,
+     "num_samples": 50000
+   }
 """
 
 
@@ -56,6 +66,12 @@ It can calculate properties like pore diameters, channel dimensionality, accessi
   Calculates the volume accessible to the center of a spherical probe. 
   command : -ha -vol
   probe_radius : default is 1.2(H2), depands on the guest molecule
+  num_samples : default is 50000
+
+- **Pore size distribution:**
+  Calculates the sampled distribution of accessible pore sizes.
+  command : -ha -psd
+  probe_radius : default is 1.2(H2), depends on the guest molecule
   num_samples : default is 50000
 
 **Notes:**  

@@ -17,15 +17,22 @@ dependencies:
 - pip:
 
   - ase==3.26.0
+  - beautifulsoup4==4.15.0
+  - foyer==0.7.6
   - h5py==3.14.0
   - ipykernel==6.31.0
+  - Jinja2==3.1.6
   - langchain==0.3.26
   - langchain-core==0.3.66
   - langchain-openai==0.3.24
   - langchain-text-splitters==0.3.8
   - mace-torch==0.3.14
+  - matplotlib==3.9.4
   - matscipy==1.1.1
+  - omsdetector @ git+https://github.com/emmhald/open_metal_detector.git@c2a71912b7acf9e40a7838b04630dd7b64ba22a6
   - openai==1.90.0
+  - PACMAN-charge==1.4.2
+  - ParmEd==4.3.0
   - pubchempy==1.0.4
   - pydantic==2.12.5
   - pymatgen==2024.8.9

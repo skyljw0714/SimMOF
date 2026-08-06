@@ -1,5 +1,5 @@
 import json
-from query.agent import analyze_mof_query
+from query.agent import analyze_mof_query, rewrite_clarified_query
 from working.agent import WorkingAgent
 from Zeopp.agent import ZeoppAgent
 from LAMMPS.agent import LAMMPSAgent
@@ -9,8 +9,8 @@ from VASP.agent import VASPAgent
 from screening.agent import ScreeningAgent
 from analysis.agent import AnalysisAgent
 from langchain.schema import HumanMessage, SystemMessage
-from config import LLM_DEFAULT
-
+from config import INTERACTION_MODE, LLM_DEFAULT
+from core.timing import timer
 
 def main():
     agents = {
@@ -32,7 +32,12 @@ def main():
         print(f"User query: {user_query}")
 
         
-        bundle = analyze_mof_query(user_query)
+        with timer(
+            "QueryAgent.analyze_mof_query",
+            category="query_agent",
+            extra={"user_query": user_query},
+        ):
+            bundle = analyze_mof_query(user_query)
         if not bundle or not bundle.get("queries"):
             print("QueryAgent parsing failed.")
             continue
@@ -44,22 +49,54 @@ def main():
         clarification_round = 0
         current_query = user_query
 
+        if bundle.get("needs_clarification") and INTERACTION_MODE != "interactive":
+            print("\n[Missing Required Information]")
+            print(bundle.get("clarification_question", "More information is required to continue."))
+            print("[Autonomous mode] Workflow terminated because essential information is missing.")
+            continue
+
         while bundle.get("needs_clarification") and clarification_round < 2:
             clarification_round += 1
 
             print("\n[Missing Required Information]")
-            print(bundle.get("clarification_question", "More information is required to continue."))
+            clarification_question = str(
+                bundle.get(
+                    "clarification_question",
+                    "More information is required to continue.",
+                )
+            ).strip()
+            print(clarification_question)
 
             user_reply = input("Reply: ").strip()
 
-            current_query = (
-                current_query.strip()
-                + "\n"
-                + f"Additional user-provided conditions: {user_reply}"
-            )
+            with timer(
+                "QueryAgent.rewrite_clarified_query",
+                category="query_agent",
+                extra={
+                    "user_query": user_query,
+                    "current_query": current_query,
+                    "clarification_round": clarification_round,
+                },
+            ):
+                current_query = rewrite_clarified_query(
+                    current_query,
+                    clarification_question,
+                    user_reply,
+                )
 
-            print("\n[Re-parsing query with additional conditions...]")
-            bundle = analyze_mof_query(current_query)
+            print("\n[Rewritten final query]")
+            print(current_query)
+            print("\n[Re-parsing rewritten query...]")
+            with timer(
+                "QueryAgent.re_analyze_mof_query",
+                category="query_agent",
+                extra={
+                    "user_query": user_query,
+                    "current_query": current_query,
+                    "clarification_round": clarification_round,
+                },
+            ):
+                bundle = analyze_mof_query(current_query)
 
             if not bundle or not bundle.get("queries"):
                 print("QueryAgent parsing failed after clarification.")
@@ -72,48 +109,36 @@ def main():
         analysis_enabled = bundle.get("analysis_enabled", False)
         simulation_input = bundle.get("simulation_input")
             
-        simulation_input_status = bundle.get("simulation_input_status", "ok")
-        simulation_input_message = bundle.get("simulation_input_message", "")
-
-        if simulation_input_status == "needs_user_confirmation":
-            print("\n[Simulation Input Review]")
-            print(simulation_input_message)
-
-            user_reply = input("Reply (KEEP / REGENERATE / correction): ").strip()
-
-            if user_reply.upper() == "KEEP":
-                print("[Simulation Input] keeping original user-provided input as-is.")
-
-            elif user_reply.upper() == "REGENERATE":
-                print("[Simulation Input] discarding user-provided input and falling back to fresh generation.")
-                simulation_input = {"present": False, "snippets": []}
-
-            else:
-                print("[Simulation Input] patching user-provided input based on user reply...")
-                simulation_input = patch_simulation_input_with_user_reply(
-                    simulation_input=simulation_input,
-                    user_reply=user_reply,
-                    parsed_queries=parsed,
-                    llm=LLM_DEFAULT,
-                )
-
-                print("\n[Patched simulation_input]")
-                print(json.dumps(simulation_input, ensure_ascii=False, indent=2))
-
         print("\n[Parsed Queries]")
         print(json.dumps(parsed, ensure_ascii=False, indent=2))
 
 
         
-        wa = WorkingAgent(parsed, analysis_enabled=analysis_enabled, agents=agents, simulation_input=simulation_input,)
-        plans = wa.plan()
+        wa = WorkingAgent(
+            parsed,
+            analysis_enabled=analysis_enabled,
+            agents=agents,
+            simulation_input=simulation_input,
+            analysis_recommendation=bundle.get("analysis_recommendation"),
+        )
+        with timer(
+            "WorkingAgent.plan",
+            category="working_agent_plan",
+            extra={"user_query": user_query},
+        ):
+            plans = wa.plan()
 
         print("\n[Planned Workflows]")
         for i, p in enumerate(plans, 1):
             print(f"\n--- Plan {i} ---")
             print(json.dumps(p.model_dump(), ensure_ascii=False, indent=2))
 
-        results = wa.run()
+        with timer(
+            "WorkingAgent.run",
+            category="working_agent_run",
+            extra={"user_query": user_query},
+        ):
+            results = wa.run()
 
 def llm_patch_simulation_snippet(software: str, original_text: str, user_reply: str, parsed_queries: list, llm) -> str:
     system = """You are a careful editor for simulation input snippets.

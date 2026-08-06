@@ -289,16 +289,47 @@ def build_special_site_coords(molecule, atoms, bonds, xyz_atoms):
     return None
 
 
+def _element_from_ff_type(ff_type):
+    if ff_type[:2] in atomic_masses:
+        return ff_type[:2]
+    if ff_type[:1] in atomic_masses:
+        return ff_type[:1]
+    return None
+
+
 def build_default_site_coords(atoms, xyz_atoms):
     if len(atoms) != len(xyz_atoms):
         raise ValueError(
             f"Topology site count ({len(atoms)}) != xyz atom count ({len(xyz_atoms)})"
         )
 
+    topo_elements = [_element_from_ff_type(ff_type) for _, ff_type in atoms]
+    xyz_available = list(xyz_atoms)
+    reordered = False
+
+    if all(e is not None for e in topo_elements):
+        ordered_xyz = []
+        used = [False] * len(xyz_available)
+        matched = True
+        for elem in topo_elements:
+            found = False
+            for i, (sym, r) in enumerate(xyz_available):
+                if not used[i] and sym.capitalize() == elem.capitalize():
+                    ordered_xyz.append((sym, r))
+                    used[i] = True
+                    found = True
+                    break
+            if not found:
+                matched = False
+                break
+        if matched and ordered_xyz != xyz_available:
+            xyz_available = ordered_xyz
+            reordered = True
+
     coords = {}
-    for (site_name, _ff_type), (_sym, r) in zip(atoms, xyz_atoms):
+    for (site_name, _ff_type), (_sym, r) in zip(atoms, xyz_available):
         coords[site_name] = r
-    return coords
+    return coords, xyz_available, reordered
 
 
 def generate_lt(molecule, xyz_file, top_file, par_file, output_file):
@@ -317,9 +348,18 @@ def generate_lt(molecule, xyz_file, top_file, par_file, output_file):
     
     coords_np = build_special_site_coords(molecule, atoms, bonds, xyz_atoms)
     if coords_np is None:
-        coords_np = build_default_site_coords(atoms, xyz_atoms)
+        coords_np, reordered_xyz, was_reordered = build_default_site_coords(atoms, xyz_atoms)
+        if was_reordered:
+            with open(xyz_file, 'r') as f:
+                header_lines = f.readlines()[:2]
+            with open(xyz_file, 'w') as f:
+                f.writelines(header_lines)
+                for sym, r in reordered_xyz:
+                    f.write(f"  {sym}  {r[0]:.8f}  {r[1]:.8f}  {r[2]:.8f}\n")
+            print(f"[TraPPE] Reordered {xyz_file} to match topology atom order")
+    else:
+        was_reordered = False
 
-    
     coords = {k: (float(v[0]), float(v[1]), float(v[2])) for k, v in coords_np.items()}
 
     atoms_dict = dict(atoms)

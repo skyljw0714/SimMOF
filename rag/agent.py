@@ -1,7 +1,9 @@
+import csv
 import os
 import re
 import json
 import pickle
+import subprocess
 import faiss
 
 from dataclasses import dataclass
@@ -9,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sentence_transformers import SentenceTransformer
 from langchain.schema import SystemMessage, HumanMessage
 
-from config import AGENT_LLM_MAP, LLM_DEFAULT, RAG_CORPUS_DIR, RAG_EMBED_MODEL_NAME, RAG_STORE_DIR
+from config import AGENT_LLM_MAP, LLM_DEFAULT, MOFID_PYTHON, RAG_CORPUS_DIR, RAG_EMBED_MODEL_NAME, RAG_STORE_DIR
 
 
 @dataclass
@@ -80,6 +82,7 @@ TASK_SPECS: Dict[str, Dict[str, Any]] = {
             "framework forcefield choice patterns",
             "guest model-family choice patterns",
             "clearly stated convention for this guest or MOF type",
+            "charge assignment method used (DDEC6, REPEAT, EQeq, PACMAN, or none)",
         ],
         "forbidden_terms": [],
         "min_notes_chars": 20,
@@ -126,6 +129,32 @@ TASK_SPECS: Dict[str, Dict[str, Any]] = {
             "which Zeo++ analyses are useful",
             "probe-radius choice logic",
             "metric-selection patterns",
+        ],
+        "forbidden_terms": [],
+        "min_notes_chars": 20,
+    },
+
+    "lammps_ff": {
+        "label": "LAMMPS force field selection for MOF molecular dynamics",
+        "relevant_if": [
+            "force field choice for MOF framework atoms in LAMMPS",
+            "UFF or DREIDING parameterization for MOF MD simulation",
+            "lammps-interface or similar FF generation tool usage",
+            "pair_style selection for MOF atoms",
+            "FF parameterization approach for metal-organic frameworks",
+        ],
+        "not_relevant_if": [
+            "adsorption results without force field details",
+            "experimental characterization only",
+            "RASPA or Monte Carlo simulations without LAMMPS FF details",
+            "run protocol discussion without force field choice",
+            "general MD results without FF parameterization details",
+        ],
+        "focus_notes": [
+            "which FF family (UFF/DREIDING/other) used for MOF atoms",
+            "how FF parameters were assigned or generated",
+            "pair_style or mixing rule choices",
+            "charge assignment method used (DDEC6, EQeq, PACMAN, or none)",
         ],
         "forbidden_terms": [],
         "min_notes_chars": 20,
@@ -210,7 +239,7 @@ class RagAgent:
         llm=None,
         agent_name: str = "RagAgent",
         *,
-        per_query_topn: int = 60,
+        per_query_topn: int = 50,
         final_papers: int = 5,
         max_chars_per_evidence: int = 900,
         corpus_dir: str = str(RAG_CORPUS_DIR),
@@ -243,7 +272,13 @@ class RagAgent:
 
         self.corpus_dir = corpus_dir
 
-    def _call_llm(self, messages: List[Any]) -> str:
+    def _call_llm(self, messages: List[Any], label: str = None) -> str:
+        try:
+            from core.llm_logging import set_llm_context
+            set_llm_context("RagAgent", label or "rag_llm_call")
+        except Exception:
+            pass
+
         llm_obj = self.llm
 
         if callable(llm_obj) and not hasattr(llm_obj, "invoke"):
@@ -340,7 +375,7 @@ class RagAgent:
         ctx: Dict[str, Any],
         simulation_description: str,
         top_file_hits: List[Dict[str, Any]],
-        per_file_max_snippets: int = 6,
+        per_file_max_snippets: int = 5,
         per_snippet_max_chars: int = 900,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
@@ -395,8 +430,8 @@ class RagAgent:
         ctx: Dict[str, Any],
         queries: List[SearchQuery],
         simulation_description: str,
-        top_files: int = 5,
-        per_file_max_snippets: int = 6,
+        top_files: int = 10,
+        per_file_max_snippets: int = 5,
         per_snippet_max_chars: int = 900,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
@@ -433,8 +468,8 @@ class RagAgent:
         self,
         context: Dict[str, Any],
         *,
-        top_files: int = 5,
-        per_file_max_snippets: int = 6,
+        top_files: int = 10,
+        per_file_max_snippets: int = 5,
         per_snippet_max_chars: int = 900,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
@@ -473,7 +508,84 @@ class RagAgent:
         return {
             "systemin_queries": base["queries"],
             "file_notes": base["file_notes"],
+            "top_file_hits": base["top_file_hits"],
             "rag_summaries": rag_summaries,
+        }
+
+    def run_for_lammps_ff(
+        self,
+        context: Dict[str, Any],
+        *,
+        top_files: int = 10,
+        per_file_max_snippets: int = 5,
+        per_snippet_max_chars: int = 900,
+        file_read_max_chars: int = 12000,
+        file_excerpt_chars: int = 2000,
+    ) -> Dict[str, Any]:
+        mof = str(context.get("mof", "")).strip()
+        guest = str(context.get("guest", "")).strip()
+        prop = str(context.get("property", "")).strip()
+
+        simulation_description = self._make_simulation_description(
+            context,
+            f"LAMMPS force field selection for {mof} simulation ({prop})",
+        )
+
+        queries = [
+            SearchQuery(
+                intent="main",
+                query=(
+                    f"LAMMPS force field selection for MOF {mof} "
+                    f"molecular dynamics simulation {prop}. "
+                    f"{str(context.get('query_text', '')).strip()}"
+                ).strip(),
+                top_n=self.per_query_topn,
+            ),
+            SearchQuery(
+                intent="main",
+                query=f"{mof} LAMMPS force field UFF DREIDING molecular dynamics",
+                top_n=self.per_query_topn,
+            ),
+            SearchQuery(
+                intent="optional",
+                query=f"{mof} force field parameterization lammps-interface",
+                top_n=self.per_query_topn,
+            ),
+        ]
+
+        base = self._run_task_pipeline(
+            task_name="lammps_ff",
+            ctx=context,
+            queries=queries,
+            simulation_description=simulation_description,
+            top_files=top_files,
+            per_file_max_snippets=per_file_max_snippets,
+            per_snippet_max_chars=per_snippet_max_chars,
+            file_read_max_chars=file_read_max_chars,
+            file_excerpt_chars=file_excerpt_chars,
+        )
+
+        useful_blocks: List[str] = []
+        relevant_docs: List[Dict[str, Any]] = []
+        for x in base["file_notes"]:
+            notes = str(x.get("notes") or "").strip()
+            if x.get("is_relevant") and notes:
+                useful_blocks.append(f'file={x["filename"]}\n{notes}')
+                relevant_docs.append({"filename": x["filename"], "text": notes})
+
+        ff_hints = "\n\n".join(useful_blocks).strip()
+
+        charge_hints = (
+            self._summarize_raspa_hints(relevant_docs, focus="charge", ctx=context)
+            if relevant_docs else ""
+        )
+
+        return {
+            "lammps_ff_queries": base["queries"],
+            "file_notes": base["file_notes"],
+            "top_file_hits": base["top_file_hits"],
+            "ff_hints": ff_hints,
+            "charge_hints": charge_hints,
         }
 
     def _build_systemin_queries(self, mof: str, guest: str, prop: str, sim_desc: str) -> List[SearchQuery]:
@@ -536,21 +648,23 @@ class RagAgent:
         *,
         filename: str,
         hits: List[Hit],
-        max_snippets: int = 6,
-        max_chars: int = 900,
+        max_snippets: int = 5,
+        max_chars: Optional[int] = None,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
+        include_file_excerpt: bool = False,
     ) -> str:
         lines: List[str] = []
 
-        txt_path = self._resolve_txt_path(filename)
-        if txt_path:
-            head = self._read_text_file(txt_path, max_chars=file_read_max_chars)
-            if head:
-                head = re.sub(r"\s+", " ", head).strip()
-                excerpt = head[:file_excerpt_chars]
-                lines.append(f"[file_excerpt path={txt_path}] {excerpt}")
-                lines.append("")
+        if include_file_excerpt:
+            txt_path = self._resolve_txt_path(filename)
+            if txt_path:
+                head = self._read_text_file(txt_path, max_chars=file_read_max_chars)
+                if head:
+                    head = re.sub(r"\s+", " ", head).strip()
+                    excerpt = head[:file_excerpt_chars]
+                    lines.append(f"[file_excerpt path={txt_path}] {excerpt}")
+                    lines.append("")
 
         for h in hits[:max_snippets]:
             txt = self._compact_text(h.text, max_chars=max_chars)
@@ -591,7 +705,7 @@ class RagAgent:
             SystemMessage(content="Return STRICT JSON only (no markdown, no commentary)."),
             HumanMessage(content=prompt),
         ]
-        raw = self._call_llm(messages)
+        raw = self._call_llm(messages, label="llm_gate_by_task")
 
         try:
             obj = self._safe_json_loads(raw)
@@ -618,8 +732,8 @@ class RagAgent:
     def run_for_raspa_models(
         self,
         ctx: Dict[str, Any],
-        top_files: int = 5,
-        per_file_max_snippets: int = 6,
+        top_files: int = 10,
+        per_file_max_snippets: int = 5,
         per_snippet_max_chars: int = 900,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
@@ -633,13 +747,23 @@ class RagAgent:
             f"RASPA adsorption simulation for {guest} in {mof} ({prop})",
         )
 
-        queries = [
+        query_text = str(ctx.get("query_text") or "").strip()
+        user_text = query_text or (
+            f"RASPA adsorption simulation force field and guest model for {guest} in {mof} ({prop})"
+        )
+        parsed_query = {
+            "mof": mof,
+            "guest": guest,
+            "property": prop,
+            "task": "raspa_ff_and_molecule_model_selection",
+        }
+        fallback_queries = [
             SearchQuery(
                 intent="main",
                 query=(
                     f"RASPA adsorption simulation force field selection and guest model definition "
                     f"for MOF {mof} with guest {guest}. Property/task: {prop}. "
-                    f"{str(ctx.get('query_text', '')).strip()}"
+                    f"{query_text}"
                 ).strip(),
                 top_n=self.per_query_topn,
             ),
@@ -659,6 +783,11 @@ class RagAgent:
                 top_n=self.per_query_topn,
             ),
         ]
+        try:
+            llm_queries = self.plan_queries_with_llm(user_text, parsed_query)
+            queries = llm_queries if llm_queries else fallback_queries
+        except Exception:
+            queries = fallback_queries
 
         base = self._run_task_pipeline(
             task_name="raspa_models",
@@ -719,12 +848,63 @@ class RagAgent:
                     "text": merged_text[:22000],
                 })
 
+        if len(relevant_docs) < 3 and ctx.get("mof_path"):
+            print(f"[RagAgent] Few relevant docs ({len(relevant_docs)}) for '{mof}' — trying similar-MOF fallback queries.")
+            fallback_queries = self._get_similar_mof_queries(ctx)
+            if fallback_queries:
+                base = self._run_task_pipeline(
+                    task_name="raspa_models",
+                    ctx=ctx,
+                    queries=fallback_queries,
+                    simulation_description=simulation_description,
+                    top_files=top_files,
+                    per_file_max_snippets=per_file_max_snippets,
+                    per_snippet_max_chars=per_snippet_max_chars,
+                    file_read_max_chars=file_read_max_chars,
+                    file_excerpt_chars=file_excerpt_chars,
+                )
+                notes_by_filename = {str(x.get("filename")): x for x in base["file_notes"]}
+                seen_filenames = {d["filename"] for d in relevant_docs}
+                for item in base["top_file_hits"]:
+                    filename = item["filename"]
+                    if filename in seen_filenames:
+                        continue
+                    note_obj = notes_by_filename.get(filename, {})
+                    if not note_obj.get("is_relevant"):
+                        continue
+                    hits: List[Hit] = item["hits"]
+                    snippets = self._build_snippets_for_file(
+                        filename=filename,
+                        hits=hits,
+                        max_snippets=per_file_max_snippets,
+                        max_chars=per_snippet_max_chars,
+                        file_read_max_chars=file_read_max_chars,
+                        file_excerpt_chars=file_excerpt_chars,
+                    )
+                    parts: List[str] = []
+                    notes = str(note_obj.get("notes") or "").strip()
+                    if notes:
+                        parts.append(f"[RAG relevance notes]\n{notes}")
+                    if snippets:
+                        parts.append(f"[Retrieved snippets]\n{snippets}")
+                    txt_path = self._resolve_txt_path(filename)
+                    if txt_path:
+                        txt = self._read_text_file(txt_path, max_chars=12000)
+                        txt = " ".join((txt or "").split()).strip()
+                        if txt:
+                            parts.append(f"[File excerpt]\n{txt[:4000]}")
+                    merged = "\n\n".join(parts).strip()
+                    if merged:
+                        relevant_docs.append({"filename": filename, "text": merged[:22000]})
+                        seen_filenames.add(filename)
+
         if not relevant_docs:
             return {
                 "raspa_model_queries": base["queries"],
                 "file_notes": base["file_notes"],
                 "forcefield_hints": "",
                 "molecule_hints": "",
+                "charge_hints": "",
             }
 
         forcefield_hints = self._summarize_raspa_hints(
@@ -739,18 +919,26 @@ class RagAgent:
             ctx=ctx,
         )
 
+        charge_hints = self._summarize_raspa_hints(
+            relevant_docs,
+            focus="charge",
+            ctx=ctx,
+        )
+
         return {
             "raspa_model_queries": base["queries"],
             "file_notes": base["file_notes"],
+            "top_file_hits": base["top_file_hits"],
             "forcefield_hints": forcefield_hints.strip(),
             "molecule_hints": molecule_hints.strip(),
+            "charge_hints": charge_hints.strip(),
         }
 
     def run_for_screening_workflows(
         self,
         ctx: Dict[str, Any],
-        top_files: int = 5,
-        per_file_max_snippets: int = 6,
+        top_files: int = 10,
+        per_file_max_snippets: int = 5,
         per_snippet_max_chars: int = 900,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
@@ -803,11 +991,17 @@ class RagAgent:
         return {
             "top_papers": base["top_papers"],
             "file_notes": base["file_notes"],
+            "top_file_hits": base["top_file_hits"],
             "workflow_hints": workflow_hints.strip(),
         }
 
     def _summarize_raspa_hints(self, docs: list, focus: str, ctx: Dict[str, Any]) -> str:
-        focus_text = "framework forcefield choice" if focus == "forcefield" else "guest molecule definition/model choice"
+        if focus == "forcefield":
+            focus_text = "framework forcefield choice"
+        elif focus == "charge":
+            focus_text = "partial charge assignment method (DDEC6, REPEAT, EQeq, PACMAN, or none)"
+        else:
+            focus_text = "guest molecule definition/model choice"
 
         system_msg = (
             "You are summarizing ONLY actionable hints for RASPA input model selection.\n"
@@ -815,6 +1009,7 @@ class RagAgent:
             "Bullets must be generic and non-numeric.\n"
             "Avoid long run lengths, avoid cycles/probabilities, avoid parameter tuning.\n"
             "Only mention model/choice patterns (framework forcefield vs guest model families) if clearly supported.\n"
+            "End each bullet with the source filename in parentheses, e.g. '- Use UFF for organic atoms. (smith2021.txt)'.\n"
             "If nothing clearly relevant is found, output an empty string.\n"
             "No extra text."
         )
@@ -836,7 +1031,7 @@ class RagAgent:
         )
 
         messages = [SystemMessage(content=system_msg), HumanMessage(content=prompt)]
-        raw = self._call_llm(messages)
+        raw = self._call_llm(messages, label="summarize_raspa_hints")
         text = str(raw).strip()
 
         if text.startswith("```"):
@@ -862,6 +1057,7 @@ class RagAgent:
             "- Focus on WHICH steps/tools are used and WHY, as a tool-chain (e.g., geometric prefilter -> Henry ranking -> expensive simulation).\n"
             "- Do NOT invent tools outside common MOF screening context.\n"
             "- Do NOT paste long sentences from evidence.\n"
+            "- End each bullet with the source filename in parentheses, e.g. '- Use geometric prefiltering before GCMC. (lee2022.txt)'.\n"
             "No extra text."
         )
 
@@ -887,7 +1083,7 @@ RAG evidence:
         raw = self._call_llm([
             SystemMessage(content=system_msg),
             HumanMessage(content=prompt),
-        ]).strip()
+        ], label="summarize_screening_hints").strip()
 
         if raw.startswith("```"):
             raw = "\n".join(raw.splitlines()[1:-1]).strip()
@@ -899,8 +1095,8 @@ RAG evidence:
     def run_for_vasp_incar(
         self,
         rag_ctx: Dict[str, Any],
-        top_files: int = 5,
-        per_file_max_snippets: int = 6,
+        top_files: int = 10,
+        per_file_max_snippets: int = 5,
         per_snippet_max_chars: int = 900,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
@@ -941,6 +1137,7 @@ RAG evidence:
         return {
             "top_papers": base["top_papers"],
             "file_notes": base["file_notes"],
+            "top_file_hits": base["top_file_hits"],
             "vasp_incar_hints": vasp_incar_hints,
         }
 
@@ -969,6 +1166,7 @@ Hard constraints:
   * symmetry / smearing practices for MOFs (ISYM, ISMEAR/SIGMA) in relax vs DOS
   * DOS/static cues (IBRION/NSW/ICHARG/LORBIT) if stage implies it
 - Do NOT copy long sentences from evidence.
+- End each bullet with the source filename in parentheses, e.g. '- Use IVDW for dispersion. (smith2021.txt)'.
 
 Context:
 MOF={mof}
@@ -986,7 +1184,7 @@ RAG evidence:
             SystemMessage(content="You are a careful scientific assistant. Output only the requested bullets."),
             HumanMessage(content=prompt),
         ]
-        raw = self._call_llm(messages).strip()
+        raw = self._call_llm(messages, label="summarize_vasp_hints").strip()
 
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
         bullets = [ln for ln in lines if ln.startswith("- ")]
@@ -996,8 +1194,8 @@ RAG evidence:
     def run_for_zeopp(
         self,
         rag_ctx: Dict[str, Any],
-        top_files: int = 5,
-        per_file_max_snippets: int = 6,
+        top_files: int = 10,
+        per_file_max_snippets: int = 5,
         per_snippet_max_chars: int = 900,
         file_read_max_chars: int = 12000,
         file_excerpt_chars: int = 2000,
@@ -1038,6 +1236,7 @@ RAG evidence:
         return {
             "top_papers": base["top_papers"],
             "file_notes": base["file_notes"],
+            "top_file_hits": base["top_file_hits"],
             "zeopp_hints": zeopp_hints,
         }
 
@@ -1062,6 +1261,7 @@ Hard constraints:
   * channel/accessible network analysis vs cavity analysis
   * PLD/LCD style metrics (pore limiting / largest cavity) if supported by evidence
   * probe-radius choice logic (guest-sized vs generic N2/He probes) as a concept
+- End each bullet with the source filename in parentheses, e.g. '- Use accessible volume for guest-accessible pore analysis. (jones2020.txt)'.
 
 Context:
 MOF={mof}
@@ -1076,11 +1276,181 @@ RAG evidence:
         raw = self._call_llm([
             SystemMessage(content="Output only the requested bullets. No extra text."),
             HumanMessage(content=prompt),
-        ]).strip()
+        ], label="summarize_zeopp_hints").strip()
 
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
         bullets = [ln for ln in lines if ln.startswith("- ")]
         return "\n".join(bullets[:4]).strip()
+
+    def _read_cif_header(self, cif_path: str, max_lines: int = 40) -> str:
+        try:
+            with open(cif_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = [f.readline() for _ in range(max_lines)]
+            return "".join(lines).strip()
+        except Exception:
+            return ""
+
+    _MOFID_PYTHON = MOFID_PYTHON
+
+    def _run_mofid(self, cif_path: str) -> Optional[Dict[str, Any]]:
+        script = (
+            "import json, sys; "
+            "from mofid.run_mofid import cif2mofid; "
+            f"result = cif2mofid({json.dumps(str(cif_path))}); "
+            "print(json.dumps(result))"
+        )
+        try:
+            proc = subprocess.run(
+                [self._MOFID_PYTHON, "-c", script],
+                capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                print(f"[RagAgent] MOFid failed: {proc.stderr[-500:]}")
+                return None
+            for line in reversed(proc.stdout.strip().splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    return json.loads(line)
+            return None
+        except Exception as e:
+            print(f"[RagAgent] MOFid exception: {e}")
+            return None
+
+    _COREMOF_CSV = os.path.join(
+        os.path.dirname(__file__), "..",
+        "CSD-modified", "CSD-modified", "CR_data_CSD_modified_20250227.csv",
+    )
+
+    def _find_coremof_similar(
+        self, metals: List[str], topology: str, max_results: int = 8
+    ) -> List[str]:
+        csv_path = os.path.normpath(self._COREMOF_CSV)
+        if not os.path.isfile(csv_path):
+            return []
+        metals_lower = {m.strip().lower() for m in metals if m.strip()}
+        topo_lower = (topology or "").strip().lower()
+        matches: List[str] = []
+        try:
+            with open(csv_path, newline="", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    row_metal = (row.get("Metal Types") or "").strip().lower()
+                    row_topo = (row.get("topology(SingleNodes)") or "").strip().lower()
+                    if topo_lower and row_topo != topo_lower:
+                        continue
+                    if metals_lower and row_metal not in metals_lower:
+                        continue
+                    coreid = (row.get("coreid") or "").strip()
+                    if coreid:
+                        matches.append(coreid)
+                    if len(matches) >= max_results:
+                        break
+        except Exception as e:
+            print(f"[RagAgent] CoRE MOF CSV read error: {e}")
+        return matches
+
+    def _get_similar_mof_queries(self, ctx: Dict[str, Any]) -> List[SearchQuery]:
+        mof = (ctx.get("mof") or "").strip()
+        guest = (ctx.get("guest") or "").strip()
+        prop = (ctx.get("property") or "").strip()
+        cif_path = ctx.get("mof_path", "")
+
+        mofid_result: Optional[Dict[str, Any]] = None
+        metals: List[str] = []
+        linkers: List[str] = []
+        topology: str = ""
+        similar_coreids: List[str] = []
+
+        if cif_path:
+            mofid_result = self._run_mofid(str(cif_path))
+
+        if mofid_result:
+            metals = [s for s in (mofid_result.get("smiles_nodes") or []) if s]
+            linkers = [s for s in (mofid_result.get("smiles_linkers") or []) if s]
+            topology = (mofid_result.get("topology") or "").strip()
+            metal_elements = list({
+                m.strip("[]") for m in re.findall(r"\[([A-Z][a-z]?)\]", " ".join(metals))
+            })
+            if metal_elements or topology:
+                similar_coreids = self._find_coremof_similar(metal_elements, topology)
+                print(
+                    f"[RagAgent] MOFid: metals={metal_elements}, topology={topology}, "
+                    f"similar CoRE MOFs={similar_coreids[:5]}"
+                )
+
+        cif_header = self._read_cif_header(str(cif_path)) if cif_path and not mofid_result else ""
+
+        mofid_context = ""
+        if mofid_result:
+            mofid_context = (
+                f"MOFid analysis of the target CIF:\n"
+                f"  Metal node SMILES: {metals}\n"
+                f"  Linker SMILES: {linkers}\n"
+                f"  Topology: {topology}\n"
+            )
+            if similar_coreids:
+                mofid_context += (
+                    f"  Structurally similar CoRE MOF 2024 entries (same metal + topology):\n"
+                    + "\n".join(f"    - {c}" for c in similar_coreids) + "\n"
+                )
+        else:
+            mofid_context = f"CIF header (MOFid unavailable):\n{cif_header}\n"
+
+        system_msg = (
+            "You are a computational MOF chemistry expert.\n"
+            "Output ONLY valid JSON matching the schema below. No markdown, no commentary.\n"
+            'Schema: {"queries": [{"intent": "main|explain|optional", "query": "..."}]}'
+        )
+
+        similar_note = ""
+        if similar_coreids:
+            similar_note = (
+                f"Include 2–3 queries that directly name one of the similar CoRE MOF entries above "
+                f"(e.g. search for papers using that specific MOF in RASPA simulations). "
+                f"Include 2–3 queries based on structural/chemical features (metal coordination, "
+                f"linker family, topology) for broader coverage.\n"
+            )
+        else:
+            similar_note = (
+                f"Generate 4–6 queries describing the MOF's chemistry (metal type, coordination, "
+                f"linker family, topology) to retrieve papers about structurally similar MOFs.\n"
+            )
+
+        prompt = (
+            f"The RAG corpus had insufficient relevant papers for MOF '{mof}'.\n"
+            f"{mofid_context}\n"
+            f"Generate search queries to find papers about MOFs with similar structure "
+            f"that report RASPA force field choices (framework FF, guest molecule models).\n"
+            f"Guest: {guest}, Property: {prop}.\n"
+            f"{similar_note}"
+        )
+
+        raw = self._call_llm(
+            [SystemMessage(content=system_msg), HumanMessage(content=prompt)],
+            label="similar_mof_queries",
+        )
+
+        try:
+            obj = self._safe_json_loads(raw)
+            items = obj.get("queries", []) if isinstance(obj, dict) else []
+        except Exception:
+            items = []
+
+        out: List[SearchQuery] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            q = str(it.get("query") or "").strip()
+            if not q:
+                continue
+            intent = str(it.get("intent") or "main").strip()
+            out.append(SearchQuery(intent=intent, query=q, top_n=self.per_query_topn))
+
+        coreid_queries = [
+            SearchQuery(intent="main", query=cid, top_n=self.per_query_topn)
+            for cid in similar_coreids[:4]
+        ]
+        return self._dedup_queries(coreid_queries + out)
 
     def plan_queries_with_llm(self, user_text: str, parsed_query: Dict[str, Any]) -> List[SearchQuery]:
         prompt = self._build_querygen_prompt(user_text, parsed_query)
@@ -1089,7 +1459,7 @@ RAG evidence:
             SystemMessage(content=DEFAULT_SYSTEM),
             HumanMessage(content=prompt),
         ]
-        raw = self._call_llm(messages)
+        raw = self._call_llm(messages, label="plan_queries")
 
         try:
             obj = self._safe_json_loads(raw)
@@ -1177,6 +1547,35 @@ Structured hint (may be empty):
             out.append((float(score), int(idx)))
         return out
 
+    def get_si_ff_chunks(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        from config import RAG_SI_STORE_DIR
+
+        si_dir = str(RAG_SI_STORE_DIR)
+        index_path = os.path.join(si_dir, "index.faiss")
+        meta_path  = os.path.join(si_dir, "metadata.pkl")
+        if not os.path.exists(index_path):
+            return []
+
+        if not hasattr(self, "_si_index"):
+            self._si_index = faiss.read_index(index_path)
+            with open(meta_path, "rb") as f:
+                self._si_meta: List[Dict[str, Any]] = pickle.load(f)
+
+        q_emb = self.embedder.encode([query_text], normalize_embeddings=True).astype("float32")
+        D, I = self._si_index.search(q_emb, top_k)
+
+        results: List[Dict[str, Any]] = []
+        for score, idx in zip(D[0], I[0]):
+            if idx < 0 or idx >= len(self._si_meta):
+                continue
+            m = self._si_meta[idx]
+            results.append({
+                "filename": m.get("filename", ""),
+                "text":     m.get("text", ""),
+                "score":    float(score),
+            })
+        return results
+
 
     def dedup_by_chunk(self, hits: List[Hit]) -> List[Hit]:
         best: Dict[Tuple[str, int], Hit] = {}
@@ -1257,9 +1656,9 @@ Structured hint (may be empty):
         return "ip"
 
     @staticmethod
-    def _compact_text(text: str, max_chars: int) -> str:
+    def _compact_text(text: str, max_chars: Optional[int] = None) -> str:
         t = re.sub(r"\s+", " ", (text or "").strip())
-        if len(t) <= max_chars:
+        if max_chars is None or len(t) <= max_chars:
             return t
         return t[: max_chars - 3] + "..."
 
@@ -1280,7 +1679,7 @@ if __name__ == "__main__":
         "property": "diffusivity",
         "query_text": "I want to calculate diffusivity of CO2 in HKUST-1",
     }
-    out2 = agent.run_for_system_in(ctx, top_files=5)
+    out2 = agent.run_for_system_in(ctx, top_files=10)
     print("\n--- system.in RAG file_notes ---")
     print(json.dumps(out2["file_notes"], indent=2, ensure_ascii=False))
     print("\n--- system.in RAG summaries ---")

@@ -1,10 +1,12 @@
 import os
 import json
 import re
-from typing import Dict, Any, Optional
 
+from core.timing import timed_call
+from typing import Dict, Any, Optional
 from config import LLM_DEFAULT, ZEOPP_BIN as ZEOPP_BIN_PATH, working_dir, zeo_dir
 from langchain.schema import HumanMessage, SystemMessage
+from core.llm_logging import log_llm_decision, set_llm_context
 
 from .zeopp.prompt import ZEOPP_DESCRIPTION, ZEOPP_EXAMPLES
 
@@ -46,6 +48,12 @@ class ZeoppInputAgent:
 
 
     def _get_zeopp_rag_hints(self, context: Dict[str, Any], top_files: int = 5) -> str:
+        if os.getenv("SIMMOF_DISABLE_LITERATURE_RAG", "").strip().lower() in {"1", "true", "yes", "on"}:
+            print("[RAG] Zeopp literature hints disabled by environment")
+            return ""
+        if os.getenv("SIMMOF_ZEOPP_LITERATURE_RAG", "1").strip().lower() in {"0", "false", "no", "off"}:
+            print("[RAG] Zeopp literature hints disabled by environment")
+            return ""
         try:
             from rag.agent import RagAgent
 
@@ -69,6 +77,35 @@ class ZeoppInputAgent:
 
         except Exception as e:
             print(f"[RAG] Zeopp hints disabled due to error: {e}")
+            return ""
+
+    def _get_zeopp_example_rag_hints(self, query_text: str, context: Dict[str, Any], top_k: int = 4) -> str:
+        if os.getenv("SIMMOF_ZEOPP_MANUAL_RAG", "1").strip().lower() in {"0", "false", "no", "off"}:
+            print("[RAG] Zeopp example/manual hints disabled by environment")
+            return ""
+        try:
+            from input.zeopp.manual_rag import retrieve_zeopp_example_hints
+
+            out = retrieve_zeopp_example_hints(query_text, top_k=top_k)
+            hints = (out.get("formatted_hints") or "").strip()
+            if hints:
+                print("[RAG] Zeopp example/manual hints enabled")
+            else:
+                print("[RAG] no relevant Zeopp example/manual hints")
+            context.setdefault("results", {})["zeopp_example_rag_hints"] = {
+                "query": out.get("query"),
+                "hits": [
+                    {
+                        "filename": h.get("filename"),
+                        "chunk_id": h.get("chunk_id"),
+                        "score": h.get("score"),
+                    }
+                    for h in out.get("hits", [])[:top_k]
+                ],
+            }
+            return hints
+        except Exception as e:
+            print(f"[RAG] Zeopp example/manual hints disabled due to error: {e}")
             return ""
 
 
@@ -120,7 +157,20 @@ class ZeoppInputAgent:
 
         return zeopp_info
 
-    def _get_zeopp_info(self, raw_query: str, rag_hints: str = "") -> dict:
+    @staticmethod
+    def _apply_property_defaults(property_name: Optional[str], zeopp_info: Dict[str, Any]) -> Dict[str, Any]:
+        prop = re.sub(r"[\s-]+", "_", str(property_name or "").strip().lower())
+        normalized = dict(zeopp_info or {})
+        if prop in {"pore_size_distribution", "psd"}:
+            normalized["simulation_type"] = "pore size distribution"
+            normalized["command"] = "-ha -psd"
+            if normalized.get("probe_radius") is None:
+                normalized["probe_radius"] = 1.2
+            if normalized.get("num_samples") is None:
+                normalized["num_samples"] = 50000
+        return normalized
+
+    def _get_zeopp_info(self, raw_query: str, rag_hints: str = "", example_hints: str = "") -> dict:
         prompt = f"""
 You are an expert in Zeo++ (zeopp) command-line usage for MOF analysis.
 {ZEOPP_DESCRIPTION}
@@ -128,8 +178,11 @@ You are an expert in Zeo++ (zeopp) command-line usage for MOF analysis.
 Below are some examples of how to convert user queries to Zeo++ command parameters:
 {ZEOPP_EXAMPLES}
 
-Optional RAG_HINTS (may be irrelevant; use only if clearly applicable; keep defaults safe):
+Optional LITERATURE_RAG_HINTS (may be irrelevant; use only if clearly applicable; keep defaults safe):
 {rag_hints}
+
+Optional ZEOPP_EXAMPLE_MANUAL_RAG_HINTS (official examples/documentation evidence; use for exact flags and argument order):
+{example_hints}
 
 Now, given the following user query, extract the necessary parameters and generate a Zeo++ command and arguments in structured JSON format.
 User query: "{raw_query}"
@@ -144,6 +197,7 @@ Strict output rules:
             HumanMessage(content=prompt),
         ]
 
+        set_llm_context("ZeoppInputAgent", "zeopp_flags")
         response = self.llm.invoke(messages)
         try:
             zeopp_info = json.loads(response.content)
@@ -164,6 +218,7 @@ Strict output rules:
         replacements = {"target_cif_path": target_cif_path}
         rep_json = json.dumps(replacements, ensure_ascii=False, indent=2)
 
+        set_llm_context("ZeoppInputAgent", "zeopp_command_patch")
         resp = self.llm.invoke([
             SystemMessage(content=ZEOPP_REPRO_PATCH_SYSTEM),
             HumanMessage(content=ZEOPP_REPRO_PATCH_USER.format(
@@ -234,9 +289,14 @@ Strict output rules:
             print("[RAG] skipped (reproduce mode)")
 
             try:
-                patched_cmd = self._llm_patch_zeopp_command(
+                patched_cmd = timed_call(
+                    "LLM.patch_zeopp_command",
+                    self._llm_patch_zeopp_command,
                     original_text=snippet,
                     target_cif_path=target_cif_path,
+                    category="zeopp_input_internal",
+                    context=context,
+                    extra={"parent_agent": "ZeoppInputAgent"},
                 )
 
                 zeopp_bin = str(ZEOPP_BIN_PATH)
@@ -266,9 +326,39 @@ Strict output rules:
         
         single_query = self._build_plan_query(mof=mof, prop=prop, guest=guest)
 
-        rag_hints = self._get_zeopp_rag_hints(context, top_files=5)
+        rag_hints = timed_call(
+            "RAG.get_zeopp_hints",
+            self._get_zeopp_rag_hints,
+            context,
+            top_files=5,
+            category="zeopp_input_internal",
+            context=context,
+            extra={"parent_agent": "ZeoppInputAgent"},
+        )
 
-        zeopp_info = self._get_zeopp_info(single_query, rag_hints=rag_hints)
+        example_hints = timed_call(
+            "RAG.get_zeopp_example_manual_hints",
+            self._get_zeopp_example_rag_hints,
+            single_query,
+            context,
+            top_k=3,
+            category="zeopp_input_internal",
+            context=context,
+            extra={"parent_agent": "ZeoppInputAgent"},
+        )
+
+        zeopp_info = timed_call(
+            "LLM.get_zeopp_info",
+            self._get_zeopp_info,
+            single_query,
+            rag_hints=rag_hints,
+            example_hints=example_hints,
+            category="zeopp_input_internal",
+            context=context,
+            extra={"parent_agent": "ZeoppInputAgent"},
+        )
+        zeopp_info = self._apply_property_defaults(prop, zeopp_info)
+
         if not zeopp_info:
             print("[ZeoppInputAgent] ERROR: zeopp_info is empty.")
             context.setdefault("results", {})["zeopp_status"] = "input_failed"
@@ -285,4 +375,10 @@ Strict output rules:
         context["zeopp_command"] = zeopp_command
         context.setdefault("results", {})["zeopp_status"] = "ok"
         context.setdefault("results", {})["zeopp_mode"] = "standard"
+        try:
+            log_llm_decision("ZeoppInputAgent", "zeopp_flags",
+                             {"zeopp_info": zeopp_info,
+                              "zeopp_command": zeopp_command}, context)
+        except Exception:
+            pass
         return context

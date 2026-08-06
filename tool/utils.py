@@ -28,14 +28,51 @@ HARD_FAIL_FLAGS = [
     "has_overvalent_h",
     "has_undercoordinated_c",
     "has_undercoordinated_n",
-    "has_undercoordinated_metal",
-    "has_lone_atom",
+    "has_undercoordinated_alkali_alkaline",
+    "has_undercoordinated_rare_earth",
     "has_lone_molecule",
 ]
 
 REQUIRE_HAS_METAL = True
 REQUIRE_HAS_CARBON = False
 REQUIRE_HAS_HYDROGEN = False
+
+_FLAG_TO_INDICES = {
+    "has_atomic_overlaps":            lambda mc: mc.get_overlapping_indices(),
+    "has_overvalent_c":               lambda mc: mc.overvalent_c_indices,
+    "has_overvalent_h":               lambda mc: mc.overvalent_h_indices,
+    "has_undercoordinated_c":         lambda mc: mc.undercoordinated_c_indices,
+    "has_undercoordinated_n":         lambda mc: mc.undercoordinated_n_indices,
+    "has_undercoordinated_rare_earth":lambda mc: mc.undercoordinated_rare_earth_indices,
+    "has_lone_molecule":              lambda mc: mc.lone_molecule_indices,
+}
+
+def _print_mofchecker_failure(cif_name, reasons, mc):
+    structure = mc.graph.structure
+    lines = [f"[MOFChecker] FAILED: {cif_name}"]
+    lines.append("  Please fix the following issues before proceeding:")
+    for reason in reasons:
+        getter = _FLAG_TO_INDICES.get(reason)
+        if getter:
+            try:
+                indices = getter(mc)
+                if indices:
+                    atom_info = []
+                    for idx in (indices if not isinstance(indices[0], (list, tuple)) else
+                                [i for pair in indices for i in pair]):
+                        try:
+                            site = structure[idx]
+                            atom_info.append(f"{idx}({site.specie})")
+                        except Exception:
+                            atom_info.append(str(idx))
+                    lines.append(f"  - {reason}: atoms {', '.join(atom_info)}")
+                else:
+                    lines.append(f"  - {reason}")
+            except Exception:
+                lines.append(f"  - {reason}")
+        else:
+            lines.append(f"  - {reason}")
+    print('\n'.join(lines))
 
 def run_mofchecker(cif_dir: str, okdir: str):
     from mofchecker import MOFChecker
@@ -54,7 +91,28 @@ def run_mofchecker(cif_dir: str, okdir: str):
         try:
             mc = MOFChecker.from_cif(path, primitive=True)
         except Exception:
-            continue
+            try:
+                import ase.io as _ase_io
+                import re as _re
+                _atoms = _ase_io.read(str(path))
+                _ase_io.write(str(path), _atoms, format="cif")
+                _text = path.read_text(errors="replace")
+                if "_symmetry_space_group_name_H-M" not in _text:
+                    _text = _re.sub(
+                        r"(_space_group_IT_number\s+\d+)",
+                        r"\1\n_symmetry_space_group_name_H-M   'P 1'\n_symmetry_Int_Tables_number        1",
+                        _text,
+                    )
+                    _text = _re.sub(
+                        r"(loop_\s*\n\s*_space_group_symop_operation_xyz\s*\n\s*'x, y, z'\s*\n)",
+                        r"\1loop_\n  _symmetry_equiv_pos_as_xyz\n  'x, y, z'\n",
+                        _text,
+                    )
+                    path.write_text(_text)
+                mc = MOFChecker.from_cif(path, primitive=True)
+                print(f"[MOFChecker] ASE fallback conversion applied: {path.name}")
+            except Exception:
+                continue
 
         def safe_getattr(obj, name):
             try:
@@ -73,8 +131,8 @@ def run_mofchecker(cif_dir: str, okdir: str):
             "has_overvalent_h",
             "has_undercoordinated_c",
             "has_undercoordinated_n",
-            "has_undercoordinated_metal",
-            "has_lone_atom",
+            "has_undercoordinated_alkali_alkaline",
+            "has_undercoordinated_rare_earth",
             "has_lone_molecule",
         ]}
 
@@ -89,7 +147,9 @@ def run_mofchecker(cif_dir: str, okdir: str):
         if REQUIRE_HAS_HYDROGEN and flags.get("has_hydrogen") is False:
             reasons.append("missing_hydrogen")
 
-        if not reasons:
+        if reasons:
+            _print_mofchecker_failure(path.name, reasons, mc)
+        else:
             good_cifs.append(str(path))
 
     if okdir:
@@ -680,7 +740,194 @@ def run_raspa_henry(cif_dir: str,
 
 
 
-def run_mofsimplify(mofs, condition: str):
-    print(f"[MOFSimplify] Filtering {len(mofs)} MOFs with condition: {condition}")
-    
-    return ["MOF1"]
+
+
+_MOFT_GPU_HOST = "gold1"
+_MOFT_GPU_PYTHON = "/home/users/taeun8991/miniforge3/envs/moftransformer/bin/python"
+_MOFT_INFERENCE_SCRIPT = "/home/users/taeun8991/MOFTransformer/run_inference.py"
+_MOFT_GPU_WORK_ROOT = "/home/users/taeun8991/MOFTransformer/predictor_workdir"
+_CKPT_ROOT = "/home/users/taeun8991/MOFTransformer/ckpts/prop2desc_ckpt/various_dataset"
+_MOFT_MODEL_REGISTRY = {
+    "h2_uptake":              "/home/users/taeun8991/miniforge3/envs/moftransformer/lib/python3.9/site-packages/moftransformer/database/finetuned_h2_uptake.ckpt",
+    "bandgap":                "/home/users/taeun8991/miniforge3/envs/moftransformer/lib/python3.9/site-packages/moftransformer/database/finetuned_bandgap.ckpt",
+    "ch4_uptake_0.5bar":      f"{_CKPT_ROOT}/wilmer_CH4_uptake_0.5bar/best.ckpt",
+    "ch4_uptake_0.9bar":      f"{_CKPT_ROOT}/wilmer_CH4_uptake_0.9bar/best.ckpt",
+    "ch4_uptake_2.5bar":      f"{_CKPT_ROOT}/wilmer_CH4_uptake_2.5bar/best.ckpt",
+    "ch4_uptake_4.5bar":      f"{_CKPT_ROOT}/wilmer_CH4_uptake_4.5bar/best.ckpt",
+    "ch4_uptake_35bar":       f"{_CKPT_ROOT}/wilmer_CH4_uptake_35bar/best.ckpt",
+    "ar_uptake_1bar":         f"{_CKPT_ROOT}/coremof_Ar_uptake_1bar/best.ckpt",
+    "co2_henry":              f"{_CKPT_ROOT}/coremof_CO2_henry_coefficient/best.ckpt",
+    "n2_uptake_1bar":         f"{_CKPT_ROOT}/coremof_N2_uptake_1bar/best.ckpt",
+    "n2_diffusivity":         f"{_CKPT_ROOT}/coremof_N2_diffusivity_log/best.ckpt",
+    "o2_uptake_1bar":         f"{_CKPT_ROOT}/coremof_O2_uptake_1bar/best.ckpt",
+    "o2_diffusivity":         f"{_CKPT_ROOT}/coremof_O2_diffusivity_log/best.ckpt",
+    "thermal_stability":      f"{_CKPT_ROOT}/tm_thermal_stability/best.ckpt",
+    "experimental_density":   f"{_CKPT_ROOT}/tm_experimental_density/best.ckpt",
+    "qmof_bandgap":           f"{_CKPT_ROOT}/qmof_bandgap/best.ckpt",
+    "qmof_cbm":               f"{_CKPT_ROOT}/qmof_CBM/best.ckpt",
+    "qmof_vbm":               f"{_CKPT_ROOT}/qmof_VBM/best.ckpt",
+    "default":                "/home/users/taeun8991/miniforge3/envs/moftransformer/lib/python3.9/site-packages/moftransformer/database/pmtransformer.ckpt",
+}
+
+
+def run_moftransformer(
+    cif_dir: str,
+    okdir: str,
+    downstream: str = "default",
+    top_n: int = SCREENING_DEFAULT_TOP_N,
+    poll_interval: int = 30,
+    timeout: int = 3600,
+) -> list:
+    cif_dir = Path(cif_dir)
+    okdir = Path(okdir)
+    okdir.mkdir(parents=True, exist_ok=True)
+
+    cif_files = sorted(cif_dir.rglob("*.cif"))
+    if not cif_files:
+        raise FileNotFoundError(f"[MOFTransformer] No CIFs found in {cif_dir}")
+
+    model_key = downstream if downstream in _MOFT_MODEL_REGISTRY else "default"
+    model_path = _MOFT_MODEL_REGISTRY[model_key]
+    print(f"[MOFTransformer] {len(cif_files)} CIFs, model={model_key}", flush=True)
+
+    local_tmp = okdir / "_moft_tmp"
+    local_tmp.mkdir(parents=True, exist_ok=True)
+    local_csv = local_tmp / f"{downstream}.csv"
+    with open(local_csv, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["cif_id", "target"])
+        for cif in cif_files:
+            writer.writerow([cif.stem, 0.0])
+
+    run_id = okdir.parent.name
+    remote_work = f"{_MOFT_GPU_WORK_ROOT}/{run_id}"
+    remote_cif_dir = f"{remote_work}/cifs"
+    remote_csv = f"{remote_work}/{downstream}.csv"
+    remote_dataset_dir = f"{remote_work}/dataset"
+    remote_save_dir = f"{remote_work}/results"
+    remote_done = f"{remote_save_dir}/DONE"
+    remote_log = f"{remote_work}/inference.log"
+
+    def _ssh(cmd):
+        r = subprocess.run(["ssh", _MOFT_GPU_HOST, cmd], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"[MOFTransformer] SSH failed: {cmd}\n{r.stderr}")
+        return r.stdout.strip()
+
+    def _scp(src, dst, recursive=False):
+        cmd = ["scp"] + (["-r"] if recursive else []) + [src, dst]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"[MOFTransformer] SCP failed: {r.stderr}")
+
+    _ssh(f"rm -rf {remote_cif_dir} && mkdir -p {remote_save_dir} && rm -f {remote_done}")
+
+    print(f"[MOFTransformer] Transferring CIFs to {_MOFT_GPU_HOST}...", flush=True)
+    _scp(str(cif_dir), f"{_MOFT_GPU_HOST}:{remote_cif_dir}", recursive=True)
+    _scp(str(local_csv), f"{_MOFT_GPU_HOST}:{remote_csv}")
+
+    inference_cmd = (
+        f"{_MOFT_GPU_PYTHON} {_MOFT_INFERENCE_SCRIPT}"
+        f" --cif_dir {remote_cif_dir}"
+        f" --csv_path {remote_csv}"
+        f" --dataset_dir {remote_dataset_dir}"
+        f" --model_path {model_path}"
+        f" --save_dir {remote_save_dir}"
+        f" --downstream {downstream}"
+    )
+    _ssh(f"cd /home/users/taeun8991/MOFTransformer && nohup {inference_cmd} > {remote_log} 2>&1 &")
+    print("[MOFTransformer] Inference launched on GPU. Polling for completion...", flush=True)
+
+    start = time.time()
+    while True:
+        status = subprocess.run(
+            ["ssh", _MOFT_GPU_HOST, f"test -f {remote_done} && echo DONE || echo WAITING"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        elapsed = int(time.time() - start)
+        print(f"[MOFTransformer] {status} ({elapsed}s)", flush=True)
+        if status == "DONE":
+            break
+        if elapsed > timeout:
+            raise TimeoutError(f"[MOFTransformer] Timed out after {timeout}s")
+        time.sleep(poll_interval)
+
+    local_result_csv = local_tmp / "test_prediction.csv"
+    _scp(f"{_MOFT_GPU_HOST}:{remote_save_dir}/test_prediction.csv", str(local_result_csv))
+
+    ranked = []
+    with open(local_result_csv) as f:
+        for row in csv.DictReader(f):
+            cif_id = row.get("cif_id", "")
+            raw = row.get("regression_logits") or row.get("pred")
+            try:
+                pred = float(raw) if raw is not None else 0.0
+            except ValueError:
+                pred = 0.0
+            ranked.append({"cif_id": cif_id, "pred": pred})
+
+    ranked.sort(key=lambda x: x["pred"], reverse=True)
+    keep_n = min(top_n, len(ranked))
+    top = ranked[:keep_n]
+
+    output_csv = okdir / "moftransformer_results.csv"
+    with open(output_csv, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["cif_id", "pred"])
+        writer.writeheader()
+        writer.writerows(ranked)
+
+    kept_paths = []
+    for row in top:
+        matches = list(cif_dir.rglob(f"{row['cif_id']}.cif"))
+        if not matches:
+            continue
+        dst = okdir / matches[0].name
+        shutil.copy2(matches[0], dst)
+        kept_paths.append(str(dst))
+
+    print(f"[MOFTransformer] Total={len(cif_files)}, Kept={len(kept_paths)}, CSV={output_csv}", flush=True)
+    return kept_paths
+
+
+def run_mofsimplify(
+    cif_dir: str,
+    okdir: str,
+    thermal_threshold=None,
+    solvent_threshold=None,
+) -> list:
+    import json
+    import subprocess
+    from pathlib import Path
+
+    from config import MOFSIMPLIFY_PYTHON
+
+    predict_script = Path(__file__).resolve().parent / "mofsimplify_predict.py"
+
+    cmd = [str(MOFSIMPLIFY_PYTHON), str(predict_script), "--cif-dir", cif_dir, "--out-dir", okdir]
+    if thermal_threshold is not None:
+        cmd += ["--thermal-threshold", str(thermal_threshold)]
+    if solvent_threshold is not None:
+        cmd += ["--solvent-threshold", str(solvent_threshold)]
+
+    active = []
+    if thermal_threshold is not None:
+        active.append(f"thermal≥{thermal_threshold}°C")
+    if solvent_threshold is not None:
+        active.append(f"solvent≥{solvent_threshold}")
+    print(f"[MOFSimplify] Running predictions ({', '.join(active) if active else 'no threshold filter'})")
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.stderr:
+        for line in result.stderr.strip().splitlines():
+            print(line)
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"[MOFSimplify] predict script failed (rc={result.returncode}):\n{result.stderr}"
+        )
+
+    output = json.loads(result.stdout)
+    kept = [Path(p) for p in output.get("kept_paths", [])]
+    print(f"[MOFSimplify] kept {output.get('kept',0)}/{output.get('total',0)} MOFs")
+    return kept

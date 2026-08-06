@@ -9,6 +9,7 @@ from config import LLM_DEFAULT, AGENT_LLM_MAP
 
 class RASPAOutputAgent:
     FLOAT_RE = re.compile(r"[-+]?\d*\.?\d+(?:[Ee][+-]?\d+)?")
+    NUM_TOKEN_RE = re.compile(r"[-+]?(?:\d*\.?\d+(?:[Ee][+-]?\d+)?|nan|inf)", re.IGNORECASE)
     TARGET_UNIT_SUBSTR = "cm^3 (STP)/cm^3 framework"
     HENRY_RE = re.compile(
         r"\s*\[[^\]]+\]\s*Average Henry coefficient:\s*([0-9Ee\+\-\.]+)\s*(?:\+/-|±)\s*([0-9Ee\+\-\.]+)\s*\[([^\]]+)\]"
@@ -18,9 +19,17 @@ class RASPAOutputAgent:
         re.IGNORECASE
     )
 
-    COMPONENT_HEADER_RE = re.compile(r"^\s*Component\s+(\d+)\s+\[([^\]]+)\]\s*$", re.IGNORECASE)
+    COMPONENT_HEADER_RE = re.compile(r"^\s*Component\s+(\d+)\s+\[([^\]]+)\](?:.*)$", re.IGNORECASE)
     LOADING_LINE_RE = re.compile(
         r"^\s*Average loading (absolute|excess)\s*\[([^\]]+)\]\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)",
+        re.IGNORECASE
+    )
+    AVG_ENERGY_RE = re.compile(
+        r"^\s*Average\s+([-+0-9Ee\.]+)\s+Van der Waals:\s*([-+0-9Ee\.]+)\s+Coulomb:\s*([-+0-9Ee\.]+)\s*\[K\]",
+        re.IGNORECASE
+    )
+    ERR_ENERGY_RE = re.compile(
+        r"^\s*\+/-\s*([-+0-9Ee\.]+)\s+\+/-\s*([-+0-9Ee\.]+)\s+\+/-\s*([-+0-9Ee\.]+)\s*\[K\]",
         re.IGNORECASE
     )
 
@@ -28,6 +37,28 @@ class RASPAOutputAgent:
 
     def __init__(self, llm=None):
         self.llm = llm or AGENT_LLM_MAP.get("RASPAOutputAgent", LLM_DEFAULT)
+
+    def _to_float(self, value: str):
+        try:
+            parsed = float(value)
+        except Exception:
+            return None
+        if parsed != parsed or parsed in (float("inf"), float("-inf")):
+            return None
+        return parsed
+
+    def _extract_first_number(self, line: str):
+        m = self.NUM_TOKEN_RE.search(line)
+        if not m:
+            return None
+        return self._to_float(m.group(0))
+
+    def _parse_value_error_unit_line(self, line: str):
+        nums = self.NUM_TOKEN_RE.findall(line)
+        if len(nums) < 2:
+            return None, None, None
+        unit_m = re.search(r"\[([^\]]+)\]\s*$", line)
+        return self._to_float(nums[0]), self._to_float(nums[1]), unit_m.group(1).strip() if unit_m else None
 
     def _parse_uptake_from_data(self, text: str):
         for line in text.splitlines():
@@ -50,6 +81,272 @@ class RASPAOutputAgent:
                 return val, units
 
         return None, None
+
+    def _parse_loading_table(self, text: str):
+        loadings: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {}
+        cur_name = None
+
+        for line in text.splitlines():
+            m = self.COMPONENT_HEADER_RE.match(line)
+            if m:
+                cur_name = m.group(2).strip()
+                loadings.setdefault(cur_name, {"absolute": {}, "excess": {}})
+                continue
+
+            if cur_name is None:
+                continue
+
+            m2 = self.LOADING_LINE_RE.match(line)
+            if not m2:
+                continue
+
+            mode = m2.group(1).lower().strip()
+            unit = m2.group(2).strip()
+            val = self._to_float(m2.group(3))
+            err = self._to_float(m2.group(4))
+            if val is None:
+                continue
+            loadings.setdefault(cur_name, {"absolute": {}, "excess": {}})
+            loadings[cur_name][mode][unit] = {"value": val, "error": err}
+
+        return loadings
+
+    def _parse_conditions_and_components(self, text: str):
+        conditions: Dict[str, Any] = {}
+        components: Dict[str, Dict[str, Any]] = {}
+        lines = text.splitlines()
+        cur_name = None
+        pending_pressure = None
+        pending_fugacity = None
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("External temperature:"):
+                conditions["temperature_K"] = self._extract_first_number(stripped)
+            elif stripped.startswith("External Pressure:"):
+                p_pa = self._extract_first_number(stripped)
+                conditions["external_pressure_Pa"] = p_pa
+                if p_pa is not None:
+                    conditions["external_pressure_bar"] = p_pa / 100000.0
+
+            m = self.COMPONENT_HEADER_RE.match(line)
+            if m:
+                cur_name = m.group(2).strip()
+                components.setdefault(cur_name, {})
+                pending_pressure = None
+                pending_fugacity = None
+                continue
+
+            if cur_name is None:
+                continue
+
+            if stripped.startswith("MoleculeDefinitions:"):
+                components[cur_name]["force_field_model"] = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("MolFraction:"):
+                components[cur_name]["mol_fraction"] = self._extract_first_number(stripped)
+            elif stripped.startswith("Compressibility:"):
+                components[cur_name]["compressibility"] = self._extract_first_number(stripped)
+            elif stripped.startswith("Density of the bulk fluid phase:"):
+                components[cur_name]["bulk_density_kg_m3"] = self._extract_first_number(stripped)
+            elif stripped.startswith("Fugacity coefficient:"):
+                components[cur_name]["fugacity_coefficient"] = self._extract_first_number(stripped)
+            elif stripped.startswith("Partial pressure:"):
+                pending_pressure = {"Pa": self._extract_first_number(stripped)}
+                pending_fugacity = None
+                components[cur_name]["partial_pressure"] = pending_pressure
+            elif stripped.startswith("Partial fugacity:"):
+                pending_pressure = None
+                pending_fugacity = {"Pa": self._extract_first_number(stripped)}
+                components[cur_name]["partial_fugacity"] = pending_fugacity
+            elif pending_pressure is not None:
+                val = self._extract_first_number(stripped)
+                if val is not None:
+                    if "[Torr]" in stripped:
+                        pending_pressure["Torr"] = val
+                    elif "[bar]" in stripped:
+                        pending_pressure["bar"] = val
+                    elif "[atm]" in stripped:
+                        pending_pressure["atm"] = val
+            elif pending_fugacity is not None:
+                val = self._extract_first_number(stripped)
+                if val is not None:
+                    if "[Torr]" in stripped:
+                        pending_fugacity["Torr"] = val
+                    elif "[bar]" in stripped:
+                        pending_fugacity["bar"] = val
+                    elif "[atm]" in stripped:
+                        pending_fugacity["atm"] = val
+
+        return conditions, components
+
+    def _parse_properties_computed(self, text: str):
+        props: Dict[str, bool] = {}
+        in_block = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped == "Properties computed":
+                in_block = True
+                continue
+            if in_block and stripped.startswith("VTK"):
+                break
+            if not in_block or ":" not in stripped:
+                continue
+            key, value = stripped.rsplit(":", 1)
+            value = value.strip().lower()
+            if value in ("yes", "no"):
+                props[key.strip()] = (value == "yes")
+        return props
+
+    def _parse_average_energy_block(self, text: str, header: str):
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() != header:
+                continue
+            for j in range(i + 1, min(i + 20, len(lines))):
+                avg_m = self.AVG_ENERGY_RE.match(lines[j])
+                if not avg_m:
+                    continue
+                result = {
+                    "total_K": self._to_float(avg_m.group(1)),
+                    "vdw_K": self._to_float(avg_m.group(2)),
+                    "coulomb_K": self._to_float(avg_m.group(3)),
+                }
+                if j + 1 < len(lines):
+                    err_m = self.ERR_ENERGY_RE.match(lines[j + 1])
+                    if err_m:
+                        result.update({
+                            "total_error_K": self._to_float(err_m.group(1)),
+                            "vdw_error_K": self._to_float(err_m.group(2)),
+                            "coulomb_error_K": self._to_float(err_m.group(3)),
+                        })
+                return result
+        return None
+
+    def _parse_scalar_average_block(self, text: str, header: str):
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if line.strip() != header:
+                continue
+            for j in range(i + 1, min(i + 25, len(lines))):
+                stripped = lines[j].strip()
+                if stripped.startswith("Average"):
+                    val, err, unit = self._parse_value_error_unit_line(stripped)
+                    if val is not None:
+                        return {"value": val, "error": err, "unit": unit}
+        return None
+
+    def _parse_widom_summary(self, text: str):
+        widom: Dict[str, Dict[str, Any]] = {}
+        patterns = [
+            ("rosenbluth_weight", re.compile(r"\[([^\]]+)\]\s+Average Widom Rosenbluth-weight:\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)", re.IGNORECASE), None),
+            ("chemical_potential_K", re.compile(r"\[([^\]]+)\]\s+Average chemical potential:\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)\s*\[K\]", re.IGNORECASE), "K"),
+            ("ideal_gas_chemical_potential_K", re.compile(r"\[([^\]]+)\]\s+Average Widom Ideal-gas chemical potential:\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)", re.IGNORECASE), "K"),
+            ("excess_chemical_potential_K", re.compile(r"\[([^\]]+)\]\s+Average Widom excess chemical potential:\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)", re.IGNORECASE), "K"),
+            ("henry_coefficient", re.compile(r"\[([^\]]+)\]\s+Average Henry coefficient:\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)\s*\[([^\]]+)\]", re.IGNORECASE), None),
+            ("adsorption_energy_widom", re.compile(r"\[([^\]]+)\]\s+Average\s+<U_gh>_1-<U_h>_0:\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)\s*\[K\]\s*\(\s*([-+0-9Ee\.]+)\s*\+/-\s*([-+0-9Ee\.]+)\s*kJ/mol\)", re.IGNORECASE), None),
+        ]
+
+        for line in text.splitlines():
+            for key, pattern, unit in patterns:
+                m = pattern.search(line)
+                if not m:
+                    continue
+                comp = m.group(1).strip()
+                widom.setdefault(comp, {})
+                if key == "henry_coefficient":
+                    widom[comp][key] = {
+                        "value": self._to_float(m.group(2)),
+                        "error": self._to_float(m.group(3)),
+                        "unit": m.group(4).strip(),
+                    }
+                elif key == "adsorption_energy_widom":
+                    widom[comp][key] = {
+                        "value_K": self._to_float(m.group(2)),
+                        "error_K": self._to_float(m.group(3)),
+                        "value_kJ_mol": self._to_float(m.group(4)),
+                        "error_kJ_mol": self._to_float(m.group(5)),
+                    }
+                else:
+                    widom[comp][key] = {
+                        "value": self._to_float(m.group(2)),
+                        "error": self._to_float(m.group(3)),
+                        "unit": unit,
+                    }
+        return widom
+
+    def _parse_simulation_diagnostics(self, text: str):
+        diagnostics: Dict[str, Any] = {}
+        m = re.search(r"Simulation finished,\s*(\d+)\s+warnings", text, re.IGNORECASE)
+        if m:
+            diagnostics["warnings"] = int(m.group(1))
+        m = re.search(r"Total energy-drift:\s*([-+0-9Ee\.]+)", text, re.IGNORECASE)
+        if m:
+            diagnostics["total_energy_drift"] = self._to_float(m.group(1))
+        return diagnostics
+
+    def _parse_raspa_summary_from_data(self, text: str):
+        conditions, components = self._parse_conditions_and_components(text)
+        enthalpy_value, enthalpy_error, enthalpy_unit = self._parse_enthalpy_adsorption_kjmol(text)
+        loadings = self._parse_loading_table(text)
+        properties = self._parse_properties_computed(text)
+
+        target_uptake = None
+        target_uptake_error = None
+        for comp, comp_loadings in loadings.items():
+            target = comp_loadings.get("excess", {}).get(self.TARGET_UNIT_SUBSTR)
+            if target:
+                target_uptake = target.get("value")
+                target_uptake_error = target.get("error")
+                break
+
+        adsorption_site_flags = {
+            "histogram_of_molecule_positions": properties.get("Histogram of the molecule positions", False),
+            "free_energy_profiles": properties.get("Free energy profiles", False),
+            "three_d_density_grid_for_adsorbates": properties.get("3D density grid for adsorbates", False),
+            "compute_cation_or_adsorption_sites": properties.get("Compute cation an/or adsorption sites", False),
+            "movies": properties.get("Movies", False),
+        }
+
+        return {
+            "conditions": conditions,
+            "components": components,
+            "loadings": loadings,
+            "target_uptake": {
+                "mode": "excess",
+                "unit": self.TARGET_UNIT_SUBSTR,
+                "value": target_uptake,
+                "error": target_uptake_error,
+            },
+            "thermodynamics": {
+                "enthalpy_of_adsorption": {
+                    "value": enthalpy_value,
+                    "error": enthalpy_error,
+                    "unit": enthalpy_unit,
+                },
+                "qst": {
+                    "value": -enthalpy_value if enthalpy_value is not None else None,
+                    "error": enthalpy_error,
+                    "unit": enthalpy_unit,
+                    "definition": "Qst = - enthalpy_of_adsorption",
+                },
+                "derivative_mu_density": self._parse_scalar_average_block(
+                    text, "derivative of the chemical potential with respect to density (constant T,V):"
+                ),
+            },
+            "energies": {
+                "host_adsorbate": self._parse_average_energy_block(text, "Average Host-Adsorbate energy:"),
+                "adsorbate_adsorbate": self._parse_average_energy_block(text, "Average Adsorbate-Adsorbate energy:"),
+                "total_energy": self._parse_scalar_average_block(text, "Total energy:"),
+            },
+            "widom": self._parse_widom_summary(text),
+            "properties_computed": properties,
+            "adsorption_site_data": {
+                "available": any(adsorption_site_flags.values()),
+                "flags": adsorption_site_flags,
+                "note": "Preferred adsorption locations require molecule-position histograms, density grids, adsorption-site output, or snapshots; scalar uptake output alone is insufficient.",
+            },
+            "diagnostics": self._parse_simulation_diagnostics(text),
+        }
     
     def _parse_enthalpy_adsorption_kjmol(self, text: str):
         in_block = False
@@ -224,6 +521,8 @@ class RASPAOutputAgent:
             context.setdefault("results", {})
             context["results"]["uptake_excess"] = None
             context["results"]["uptake_units"] = None
+            context["results"]["uptake_error"] = None
+            context["results"]["raspa_summary"] = None
             context["results"]["raspa_output_file"] = None
             context["results"]["raspa_parse_status"] = "no_data_file"
             return context
@@ -242,6 +541,7 @@ class RASPAOutputAgent:
             henry_val = None
             henry_err = None
             henry_unit = None
+            raspa_summary = None
             used_file: Optional[Path] = None
 
             for df in data_files:
@@ -254,12 +554,14 @@ class RASPAOutputAgent:
                 v, e_, u = self._parse_henry_from_data(text)
                 if v is not None:
                     henry_val, henry_err, henry_unit = v, e_, u
+                    raspa_summary = self._parse_raspa_summary_from_data(text)
                     used_file = df
                     break
 
             context["results"]["henry_constant"] = henry_val
             context["results"]["henry_error"] = henry_err
             context["results"]["henry_units"] = henry_unit
+            context["results"]["raspa_summary"] = raspa_summary
             context["results"]["raspa_output_file"] = str(used_file) if used_file else None
             context["results"]["raspa_parse_status"] = "ok" if henry_val is not None else "parse_failed"
 
@@ -276,6 +578,7 @@ class RASPAOutputAgent:
         if is_qst:
             H_val = None
             H_err = None
+            raspa_summary = None
             used_file: Optional[Path] = None
 
             for df in data_files:
@@ -288,6 +591,7 @@ class RASPAOutputAgent:
                 v, e_, _unit = self._parse_enthalpy_adsorption_kjmol(text)
                 if v is not None:
                     H_val, H_err = v, e_
+                    raspa_summary = self._parse_raspa_summary_from_data(text)
                     used_file = df
                     break
 
@@ -302,6 +606,7 @@ class RASPAOutputAgent:
             context["results"]["qst_error"] = H_err
             context["results"]["qst_units"] = "kJ/mol"
 
+            context["results"]["raspa_summary"] = raspa_summary
             context["results"]["raspa_output_file"] = str(used_file) if used_file else None
             context["results"]["raspa_parse_status"] = "ok" if H_val is not None else "parse_failed"
 
@@ -318,6 +623,7 @@ class RASPAOutputAgent:
         if is_selectivity:
             used_file = None
             loads = None
+            raspa_summary = None
 
             for df in data_files:
                 try:
@@ -331,6 +637,7 @@ class RASPAOutputAgent:
                 )
                 if loads:
                     used_file = df
+                    raspa_summary = self._parse_raspa_summary_from_data(text)
                     break
 
             context.setdefault("results", {})
@@ -338,6 +645,7 @@ class RASPAOutputAgent:
             if not loads:
                 print("[RASPAOutputAgent] Could not find component loading data for selectivity.")
                 context["results"]["raspa_parse_status"] = "parse_failed"
+                context["results"]["raspa_summary"] = raspa_summary
                 context["results"]["raspa_output_file"] = str(used_file) if used_file else None
                 return context
 
@@ -381,6 +689,7 @@ class RASPAOutputAgent:
             }
             context["results"]["selectivity"] = S
             context["results"]["selectivity_definition"] = f"(x_{g0}/x_{g1}) / (y_{g0}/y_{g1})"
+            context["results"]["raspa_summary"] = raspa_summary
             context["results"]["raspa_output_file"] = str(used_file) if used_file else None
             context["results"]["raspa_parse_status"] = "ok" if S is not None else "parse_failed"
 
@@ -391,7 +700,9 @@ class RASPAOutputAgent:
         
         
         uptake_value = None
+        uptake_error = None
         uptake_units = None
+        raspa_summary = None
         used_file: Optional[Path] = None
 
         for df in data_files:
@@ -405,11 +716,15 @@ class RASPAOutputAgent:
             if val is not None:
                 uptake_value = val
                 uptake_units = units
+                raspa_summary = self._parse_raspa_summary_from_data(text)
+                uptake_error = (raspa_summary.get("target_uptake", {}) or {}).get("error")
                 used_file = df
                 break
 
         context["results"]["uptake_excess"] = uptake_value
+        context["results"]["uptake_error"] = uptake_error
         context["results"]["uptake_units"] = uptake_units
+        context["results"]["raspa_summary"] = raspa_summary
         context["results"]["raspa_output_file"] = str(used_file) if used_file else None
         context["results"]["raspa_parse_status"] = "ok" if uptake_value is not None else "parse_failed"
 
@@ -541,7 +856,9 @@ class RASPAOutputAgent:
                         "work_dir": b.get("work_dir"),
                         "pressure_bar": b.get("pressure_bar"),
                         "uptake_excess": b["results"].get("uptake_excess"),
+                        "uptake_error": b["results"].get("uptake_error"),
                         "uptake_units": b["results"].get("uptake_units"),
+                        "raspa_summary": b["results"].get("raspa_summary"),
                         "raspa_output_file": b["results"].get("raspa_output_file"),
                     }
                     for b in ok_top

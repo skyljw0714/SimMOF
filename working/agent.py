@@ -2,14 +2,20 @@ import json
 import os
 import asyncio
 import inspect
+import re
 
+from core.timing import timer
 from dataclasses import dataclass, field
 from typing import Dict, List, Set, Any, Optional
 from pydantic import BaseModel
 from langchain.schema import SystemMessage, HumanMessage
 from config import LLM_DEFAULT, AGENT_LLM_MAP, working_dir
+from core.job_manager import record_job_event
+from core.llm_logging import log_llm_decision, set_llm_context
 from pathlib import Path
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
+from core.databases import resolve_cif_dir
+from core.simulation_contracts import canonical_property
 
 
 
@@ -22,11 +28,20 @@ class WorkflowPlan(BaseModel):
     agent: str
     mof: Optional[str] = None
     guest: Optional[str] = None
+    cif_path: Optional[str] = None
+    cif_dir: Optional[str] = None
+    hmof_params: Optional[dict] = None
+    metal_filter: Optional[List[str]] = None
     property: str
     depends_on_plans: List[str] = []
     jobs: List[WorkflowJob] = []
     query_text: str = ""
-        
+
+
+def _model_dump(value: BaseModel) -> dict:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    return value.dict()
 
 
 
@@ -37,12 +52,17 @@ class WorkingAgent:
         analysis_enabled: bool = False,
         agents=None,
         simulation_input: Optional[dict] = None,
+        analysis_recommendation: Optional[dict] = None,
+        semantic_guardrails: bool = False,
     ):
         self.parsed_queries = parsed_queries
         self.analysis_enabled = analysis_enabled
         self.plans: List[WorkflowPlan] = []
         self.agents = agents
         self.simulation_input = simulation_input or {"present": False, "snippets": []}
+        self.analysis_recommendation = analysis_recommendation or {}
+        self.analysis_dependency_warnings: List[str] = []
+        self.semantic_guardrails = semantic_guardrails
     
     def _build_planner_prompt(self) -> str:
         queries_json = json.dumps(self.parsed_queries, ensure_ascii=False, indent=2)
@@ -59,8 +79,8 @@ class WorkingAgent:
     Simulation:
     - ZeoppAgent: surface area, pore volume.
     - RASPAAgent: Henry coefficient, gas uptake.
-    - VASPAgent: DFT energy, band structure, binding energy.
-    - LAMMPSAgent: diffusion coefficient, mean squared distance.
+    - VASPAgent: DFT energy, band structure, binding energy, Bader charge, projected DOS.
+    - LAMMPSAgent: diffusion coefficient, mean squared displacement, thermal expansion.
 
     Assistance:
     - AnalysisAgent: analyze outputs and run derived calculations.
@@ -92,9 +112,21 @@ class WorkingAgent:
         planning_rules = """
 Planning rules:
 
+- CLOSED-WORLD HANDOFF CONTRACT: parsed queries are the complete and
+  authoritative simulation inventory.
+- Create exactly ONE non-final WorkflowPlan for EACH parsed-query element and
+  create NO other non-final plan.
+- Copy agent, MOF, guest, property, CIF path/directory, hMOF parameters, and
+  metal filter from that parsed query. Do not substitute a related property.
+- Do not add supporting simulations for interpretation or analysis. An
+  analysis recommendation may consume the requested results, but it cannot
+  expand the simulation inventory.
 - NEVER output agent="RagAgent".
 - Do NOT create any separate plan for patching/reproducing inputs; reproduction is handled inside the target simulation agent using context["simulation_input"].
-- For multi-MOF queries, create per-MOF plans and exactly ONE final_response plan.
+- Parsed queries already express multi-MOF and multi-condition cardinality; do
+  not expand or merge them.
+- If MOF="database" appears in parsed queries, keep mof="database" in the plan as-is (do NOT expand to per-MOF plans). The batch iteration over CIFs is handled automatically at runtime.
+- If MOF="hmof" appears in parsed queries, keep mof="hmof" in the plan as-is. hMOF CIF generation and simulation are handled automatically at runtime.
 - Exactly ONE ResponseAgent is allowed and it MUST appear only in the final_response plan.
 
 Final plans:
@@ -117,6 +149,8 @@ Job naming:
   "<job_name>_mof", "<job_name>_guest", "<job_name>_complex".
 - Exception (VASP bader_charge): job_id MUST be:
   "<job_name>_mof", "<job_name>_complex". (no guest)
+- Exception (VASP projected_dos): job_id MUST be:
+  "<job_name>_complex".
 
 VASP workflows:
 - VASP binding energy workflows MUST include three jobs (mof, guest, complex), ordered by dependency.
@@ -124,6 +158,8 @@ VASP workflows:
 - DO NOT add "<job_name>_guest" to depends_on for the complex job. Guest runs independently.
 - Bader charge workflows include only mof and complex jobs.
 - bader_charge always depends_on_plans the matching binding_energy plan (same MOF/guest) and has no job-level depends_on.
+- Projected DOS workflows include one static complex job.
+- projected_dos always depends_on_plans the matching binding_energy plan (same MOF/guest) and reuses its optimized structures and restart files.
 
 Screening → Simulation dependency rule:
 - If a parsed query includes a ScreeningAgent plan for a MOF set (e.g., MOF="database" or multiple MOFs),
@@ -157,11 +193,7 @@ Return ONLY a JSON array following this schema:
     "jobs": [
       {
         "job_id": "string",
-        "depends_on": ["string", ...],
-        "steps": [
-          {"order": 1, "agent": "string"},
-          {"order": 2, "agent": "string"},
-        ]
+        "depends_on": ["string", ...]
       }
     ]
   },
@@ -170,95 +202,9 @@ Return ONLY a JSON array following this schema:
     """
     
         examples = """
-    Example A (single MOF Zeo++ surface area):
-    Parsed queries:
-    [
-    {"Name":"UiO-66-SA","Agent":"ZeoppAgent","Property":"surface_area","MOF":"UiO-66","Guest":null}
-    ]
-    Output:
-    [
-    {
-        "job_name": "UiO-66_surface_area",
-        "agent": "ZeoppAgent",
-        "mof": "UiO-66",
-        "guest": null,
-        "property": "surface_area",
-        "depends_on_plans": [],
-        "jobs": [
-        {
-            "job_id": "UiO-66_surface_area_job",
-            "depends_on": [],
-        }
-        ]
-    },
-    {
-        "job_name": "final_response",
-        "agent": "ResponseAgent",
-        "mof": "UiO-66",
-        "guest": null,
-        "property": "surface_area",
-        "depends_on_plans": ["UiO-66_surface_area"],
-        "jobs": [
-        {
-            "job_id": "final_response_1",
-            "depends_on": [],
-        }
-        ]
-    }
-    ]
-
-    Example B (HKUST-1 + CO2 binding energy, 2 plans)
-    Parsed queries:
-    [
-    {
-        "Name": "HKUST-1-CO2-binding_energy",
-        "Agent": "VASPAgent",
-        "Property": "binding_energy",
-        "MOF": "HKUST-1",
-        "Guest": "CO2"
-    }
-    ]
-
-    Output:
-    [
-    {
-        "job_name": "HKUST-1_CO2_binding_energy",
-        "agent": "VASPAgent",
-        "mof": "HKUST-1",
-        "guest": "CO2",
-        "property": "binding_energy",
-        "depends_on_plans": [],
-        "jobs": [
-        {
-            "job_id": "HKUST-1_CO2_binding_energy_mof",
-            "depends_on": [],
-        },
-        {
-            "job_id": "HKUST-1_CO2_binding_energy_guest",
-            "depends_on": [],
-        },
-        {
-            "job_id": "HKUST-1_CO2_binding_energy_complex",
-            "depends_on": ["HKUST-1_CO2_binding_energy_mof"],
-        }
-        ]
-    },
-    {
-        "job_name": "final_response",
-        "agent": "ResponseAgent",
-        "mof": "HKUST-1",
-        "guest": "CO2",
-        "property": "binding_energy",
-        "depends_on_plans": ["HKUST-1_CO2_vasp"],
-        "jobs": [
-        {
-            "job_id": "final_response_job",
-            "depends_on": [],
-        }
-        ]
-    }
-    ]
-
+    Before returning, compare the multiset of non-final plans to the parsed
+    queries using (agent, property, MOF, guest). The two multisets must match
+    exactly, including repeated queries for distinct conditions.
     """
 
         return f"""{agent_desc}
@@ -277,12 +223,192 @@ Return ONLY a JSON array following this schema:
     {queries_json}
     """
 
+    @staticmethod
+    def _plan_identity(
+        agent: str,
+        mof: Optional[str],
+        guest: Optional[str],
+        property_name: str,
+    ) -> tuple:
+        property_name = canonical_property(property_name)
+        normalized_guest = None
+        if (
+            agent != "ZeoppAgent"
+            and property_name not in {"thermal_expansion", "youngs_modulus"}
+        ):
+            raw_guest = (
+                str(guest or "")
+                .upper()
+                .replace("CO₂", "CO2")
+                .replace("CH₄", "CH4")
+                .replace("N₂", "N2")
+                .replace("H₂", "H2")
+            )
+            normalized_guest = "/".join(
+                sorted(part for part in re.split(r"[/,+\s]+", raw_guest) if part)
+            )
+        return (
+            str(agent or ""),
+            re.sub(r"[^a-z0-9]", "", str(mof or "").lower()),
+            str(normalized_guest or ""),
+            str(property_name or ""),
+        )
+
+    @staticmethod
+    def _analysis_plan_name(
+        mof: Optional[str],
+        guest: Optional[str],
+        method: str,
+    ) -> str:
+        parts = [str(mof or "unknown")]
+        if guest:
+            parts.append(str(guest))
+        parts.append(str(method))
+        raw = "_".join(parts)
+        return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in raw)
+
+    @staticmethod
+    def _jobs_for_analysis_dependency(
+        plan_name: str,
+        method: str,
+    ) -> List[WorkflowJob]:
+        if method == "binding_energy":
+            return [
+                WorkflowJob(job_id=f"{plan_name}_mof", depends_on=[]),
+                WorkflowJob(job_id=f"{plan_name}_guest", depends_on=[]),
+                WorkflowJob(
+                    job_id=f"{plan_name}_complex",
+                    depends_on=[f"{plan_name}_mof"],
+                ),
+            ]
+        if method == "bader_charge":
+            return [
+                WorkflowJob(job_id=f"{plan_name}_mof", depends_on=[]),
+                WorkflowJob(job_id=f"{plan_name}_complex", depends_on=[]),
+            ]
+        if method == "projected_dos":
+            return [
+                WorkflowJob(job_id=f"{plan_name}_complex", depends_on=[]),
+            ]
+        return [WorkflowJob(job_id=f"{plan_name}_job", depends_on=[])]
+
+    def _analysis_targets(self) -> List[Dict[str, Any]]:
+        targets_by_mof: Dict[tuple, Dict[str, Any]] = {}
+        for query in self.parsed_queries:
+            if not isinstance(query, dict):
+                continue
+            key = (
+                query.get("MOF"),
+                query.get("CIFPath"),
+                query.get("CIFDir"),
+            )
+            target = targets_by_mof.setdefault(
+                key,
+                {**query, "_analysis_guests": []},
+            )
+            guest = query.get("Guest")
+            if guest and guest not in target["_analysis_guests"]:
+                target["_analysis_guests"].append(guest)
+        return list(targets_by_mof.values())
+
+    @staticmethod
+    def _analysis_request_requires_guest(agent: str, method: str) -> bool:
+        if agent == "RASPAAgent":
+            return True
+        return method in {
+            "binding_energy",
+            "bader_charge",
+            "projected_dos",
+            "msd",
+            "diffusivity",
+        }
+
+    def _ensure_analysis_dependency_plans(
+        self,
+        plans: List[WorkflowPlan],
+    ) -> List[WorkflowPlan]:
+        final_plans = [
+            plan
+            for plan in plans
+            if plan.agent in {"AnalysisAgent", "ResponseAgent"}
+        ]
+        remaining = self._expected_simulation_counter()
+        simulation_plans: List[WorkflowPlan] = []
+        for plan in plans:
+            if plan.agent in {"AnalysisAgent", "ResponseAgent"}:
+                continue
+            plan.property = canonical_property(plan.property)
+            identity = self._plan_identity(
+                plan.agent,
+                plan.mof,
+                plan.guest,
+                plan.property,
+            )
+            if remaining[identity] <= 0:
+                continue
+            remaining[identity] -= 1
+            simulation_plans.append(plan)
+
+        dependency_names = [plan.job_name for plan in simulation_plans]
+        for plan in final_plans:
+            if plan.agent == "AnalysisAgent":
+                plan.depends_on_plans = dependency_names
+            elif plan.agent == "ResponseAgent":
+                plan.depends_on_plans = (
+                    ["final_analysis"] if self.analysis_enabled else dependency_names
+                )
+
+        return [*simulation_plans, *final_plans]
+
+    def _expected_simulation_counter(self) -> Counter:
+        return Counter(
+            self._plan_identity(
+                str(query.get("Agent") or ""),
+                query.get("MOF"),
+                query.get("Guest"),
+                str(query.get("Property") or ""),
+            )
+            for query in self.parsed_queries
+            if isinstance(query, dict)
+        )
+
+    def _actual_simulation_counter(
+        self,
+        plans: List[WorkflowPlan],
+    ) -> Counter:
+        return Counter(
+            self._plan_identity(
+                plan.agent,
+                plan.mof,
+                plan.guest,
+                plan.property,
+            )
+            for plan in plans
+            if plan.agent not in {"AnalysisAgent", "ResponseAgent"}
+        )
+
+    def _simulation_contract_matches(
+        self,
+        plans: List[WorkflowPlan],
+    ) -> bool:
+        return self._actual_simulation_counter(plans) == self._expected_simulation_counter()
+
+    def _final_contract_matches(self, plans: List[WorkflowPlan]) -> bool:
+        final = [plan for plan in plans if plan.agent in {"AnalysisAgent", "ResponseAgent"}]
+        expected = (
+            [("final_analysis", "AnalysisAgent"), ("final_response", "ResponseAgent")]
+            if self.analysis_enabled
+            else [("final_response", "ResponseAgent")]
+        )
+        return [(plan.job_name, plan.agent) for plan in final] == expected
+
 
     def plan(self) -> List[WorkflowPlan]:
         prompt = self._build_planner_prompt()
 
         llm_for_planner = AGENT_LLM_MAP.get("WorkingAgent", LLM_DEFAULT)
 
+        set_llm_context("WorkingAgent", "workflow_planning")
         resp = llm_for_planner.invoke([
             SystemMessage(content="You are the WorkingAgent for MOF simulations."),
             HumanMessage(content=prompt),
@@ -300,11 +426,127 @@ Return ONLY a JSON array following this schema:
             if isinstance(first, dict):
                 query_text = first.get("QueryText", "") or first.get("query_text", "") or ""
 
-        for p in data:
-            if isinstance(p, dict):
-                p.setdefault("query_text", query_text)
+        cif_paths_by_mof = {}
+        db_cif_dir = None
+        hmof_params = None
+        metal_filter = None
+        for q in self.parsed_queries:
+            if isinstance(q, dict):
+                if q.get("CIFPath"):
+                    cif_paths_by_mof[q.get("MOF")] = q["CIFPath"]
+                if q.get("CIFDir") and not db_cif_dir:
+                    db_cif_dir = q["CIFDir"]
+                if q.get("HMOFParams") and not hmof_params:
+                    hmof_params = q["HMOFParams"]
+                if q.get("MetalFilter") and not metal_filter:
+                    metal_filter = q["MetalFilter"]
 
-        self.plans = [WorkflowPlan(**p) for p in data]
+        def _materialize(raw_data: Any) -> List[WorkflowPlan]:
+            if not isinstance(raw_data, list):
+                raise ValueError("WorkingAgent output must be a JSON array.")
+            prepared = []
+            for item in raw_data:
+                if not isinstance(item, dict):
+                    continue
+                p = dict(item)
+                p.setdefault("query_text", query_text)
+                if not p.get("cif_path"):
+                    p["cif_path"] = cif_paths_by_mof.get(p.get("mof"))
+                if not p.get("cif_dir") and p.get("mof") == "database" and db_cif_dir:
+                    p["cif_dir"] = db_cif_dir
+                if not p.get("hmof_params") and p.get("mof") == "hmof" and hmof_params:
+                    p["hmof_params"] = hmof_params
+                if not p.get("metal_filter") and metal_filter:
+                    p["metal_filter"] = metal_filter
+                prepared.append(WorkflowPlan(**p))
+            if self.semantic_guardrails:
+                return self._ensure_analysis_dependency_plans(prepared)
+            return prepared
+
+        self.plans = _materialize(data)
+        if self.semantic_guardrails and not (
+            self._simulation_contract_matches(self.plans)
+            and self._final_contract_matches(self.plans)
+        ):
+            repair_prompt = f"""
+{prompt}
+
+The previous response violated the closed-world handoff contract.
+Repair it from scratch.
+
+Success criteria:
+- The multiset of non-final plans must equal the parsed-query multiset exactly.
+- Preserve duplicate parsed queries because they represent distinct conditions.
+- Add no simulation from analysis recommendations or scientific inference.
+- Return the required final plan or plans exactly as specified.
+- Return ONLY the corrected JSON array.
+""".strip()
+            set_llm_context("WorkingAgent", "workflow_planning_contract_repair")
+            repair_resp = llm_for_planner.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You repair a MOF workflow plan to satisfy an exact "
+                            "parsed-query handoff contract."
+                        )
+                    ),
+                    HumanMessage(content=repair_prompt),
+                ]
+            )
+            repair_text = repair_resp.content.strip()
+            if repair_text.startswith("```"):
+                repair_text = "\n".join(repair_text.splitlines()[1:-1]).strip()
+            repaired = _materialize(json.loads(repair_text))
+            if not (
+                self._simulation_contract_matches(repaired)
+                and self._final_contract_matches(repaired)
+            ):
+                raise ValueError(
+                    "WorkingAgent could not satisfy the parsed-query handoff contract."
+                )
+            self.plans = repaired
+        try:
+            log_llm_decision("WorkingAgent", "workflow_planning",
+                             [_model_dump(p) for p in self.plans])
+        except Exception:
+            pass
+
+        from config import ask_user_confirmation
+
+        plan_summary = "\n".join(
+            f"  Plan '{p.job_name}' [{p.agent}]: jobs={[j.job_id for j in p.jobs]}"
+            for p in self.plans
+        )
+        print(f"\n[WorkingAgent] Proposed simulation plan:\n{plan_summary}")
+
+        def _reinvoke_working(instruction: str) -> str:
+            revised_prompt = prompt + f"\n\nUser instruction: {instruction}\nRevise your plan accordingly."
+            set_llm_context("WorkingAgent", "workflow_planning_revision")
+            r = llm_for_planner.invoke([
+                SystemMessage(content="You are the WorkingAgent for MOF simulations."),
+                HumanMessage(content=revised_prompt),
+            ])
+            return r.content.strip()
+
+        action, revised_text = ask_user_confirmation(
+            "WorkingAgent", plan_summary, reinvoke_fn=_reinvoke_working, required=True
+        )
+        if action == "apply" and revised_text != plan_summary:
+            try:
+                t = revised_text
+                if t.startswith("```"):
+                    t = "\n".join(t.splitlines()[1:-1]).strip()
+                data2 = json.loads(t)
+                revised_plans = _materialize(data2)
+                if (
+                    self._simulation_contract_matches(revised_plans)
+                    and self._final_contract_matches(revised_plans)
+                ):
+                    self.plans = revised_plans
+                    print("[WorkingAgent] Plan updated per user instruction.")
+            except Exception:
+                pass
+
         return self.plans
 
     def _dump_context_job(self, ctx: Dict[str, Any], agent_name: str, when: str):
@@ -322,11 +564,12 @@ Return ONLY a JSON array following this schema:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
         job_id = ctx.get("job_id", "unknown_job")
-        out = debug_dir / f"context_{when}_{agent_name}_{job_id}.json"
+        out = debug_dir / f"context_{when}_{agent_name}_{job_id}_{os.getpid()}.json"
 
         try:
             with open(out, "w", encoding="utf-8") as f:
                 json.dump(ctx, f, indent=2, ensure_ascii=False)
+            ctx["latest_context_path"] = str(out)
         except Exception as e:
             print(f"[WorkingAgent] Warning: context dump failed: {e}")
 
@@ -343,10 +586,31 @@ Return ONLY a JSON array following this schema:
         root_dir = Path(working_dir)
         root_dir.mkdir(parents=True, exist_ok=True)
 
-        plan_root = root_dir / plan.job_name
+        plan_root = root_dir / f"{plan.job_name}_{os.getpid()}"
         plan_root.mkdir(parents=True, exist_ok=True)
 
         work_dir = plan_root
+
+        raw_cif_dir = getattr(plan, "cif_dir", None)
+        db_key_resolved = None
+        if raw_cif_dir:
+            resolved = resolve_cif_dir(raw_cif_dir)
+            if resolved:
+                db_key_resolved = raw_cif_dir
+                cif_dir = resolved
+            else:
+                cif_dir = raw_cif_dir
+        else:
+            cif_dir = None
+
+        plan_metal_filter = getattr(plan, "metal_filter", None)
+        if cif_dir and plan_metal_filter:
+            from core.mof_filter import apply_metal_filter
+            cif_dir = apply_metal_filter(
+                cif_dir=cif_dir,
+                metals=plan_metal_filter,
+                db_key=db_key_resolved,
+            )
 
         ctx = {
             "plan_name": plan.job_name,
@@ -355,9 +619,14 @@ Return ONLY a JSON array following this schema:
             "agent": getattr(plan, "agent", None),
             "mof": getattr(plan, "mof", None),
             "guest": getattr(plan, "guest", None),
+            "cif_path": getattr(plan, "cif_path", None),
+            "cif_dir": cif_dir,
+            "hmof_params": getattr(plan, "hmof_params", None),
+            "metal_filter": getattr(plan, "metal_filter", None),
             "property": getattr(plan, "property", None),
             "query_text": getattr(plan, "query_text", ""),
             "simulation_input": self.simulation_input,
+            "analysis_recommendation": self.analysis_recommendation,
             "results": {},
             "upstream_jobs": upstream_jobs,
             "upstream_plans": upstream_plans,
@@ -391,6 +660,12 @@ Return ONLY a JSON array following this schema:
 
         if ctx["agent"] == "AnalysisAgent":
             ctx["interpret_only"] = True
+            analysis_plan = self.analysis_recommendation.get("analysis_plan", {}) or {}
+            ctx["analysis_requested_methods"] = [
+                step.get("method")
+                for step in analysis_plan.get("steps", [])
+                if isinstance(step, dict) and step.get("method")
+            ]
 
         return ctx
 
@@ -437,22 +712,51 @@ Return ONLY a JSON array following this schema:
 
             
             ctx = self._build_job_ctx(plan, job, results_by_plan)
+            record_job_event(ctx, "created", message="job context created")
 
             self._dump_context_job(ctx, agent_name=agent_name, when="pre")
+            record_job_event(ctx, "running", message=f"{agent_name}.run started")
 
-            
-            async with global_sem:
-                
-                if inspect.iscoroutinefunction(agent.run):
-                    out = await agent.run(ctx)
-                else:
-                    out = await asyncio.to_thread(agent.run, ctx)
+            try:
+                async with global_sem:
+                    with timer(
+                        f"{agent_name}.run",
+                        category="workflow_agent",
+                        context=ctx,
+                        extra={
+                            "plan_agent": agent_name,
+                        },
+                    ):
+                        _NON_BATCH_AGENTS = {"ScreeningAgent", "ResponseAgent", "AnalysisAgent", "RagAgent"}
+                        is_hmof = (
+                            ctx.get("mof") == "hmof"
+                            and agent_name not in _NON_BATCH_AGENTS
+                            and ctx.get("hmof_params")
+                        )
+                        is_batch = (
+                            ctx.get("mof") == "database"
+                            and agent_name not in _NON_BATCH_AGENTS
+                            and ctx.get("cif_dir")
+                        )
+                        if is_hmof:
+                            out = await asyncio.to_thread(_run_hmof_job, agent, ctx)
+                        elif is_batch:
+                            from batch.workflow import BatchWorkflow
+                            out = await asyncio.to_thread(BatchWorkflow(agent).run, ctx)
+                        elif inspect.iscoroutinefunction(agent.run):
+                            out = await agent.run(ctx)
+                        else:
+                            out = await asyncio.to_thread(agent.run, ctx)
+            except Exception as e:
+                record_job_event(ctx, "failed", message=f"{agent_name}.run raised", last_error=str(e))
+                raise
 
             
             if isinstance(out, dict):
                 ctx.update(out)
             
             self._dump_context_job(ctx, agent_name=agent_name, when="post")
+            record_job_event(ctx, "completed", message=f"{agent_name}.run completed")
 
             results_by_plan[plan.job_name][job.job_id] = ctx
             return ctx
@@ -548,6 +852,65 @@ Return ONLY a JSON array following this schema:
         return dict(results_by_plan)
 
 
+
+
+def _run_hmof_job(agent, ctx: Dict[str, Any]) -> Dict[str, Any]:
+    from pathlib import Path
+    from structure.agent import StructureAgent
+
+    params = ctx["hmof_params"]
+    hmof_type = params.get("type", "random")
+    n_mofs = int(params.get("n_mofs", 1))
+
+    hmof_dir = Path(ctx["work_dir"]) / "hmof_cifs"
+    hmof_dir.mkdir(parents=True, exist_ok=True)
+
+    sa = StructureAgent()
+
+    if hmof_type == "custom":
+        out_path = hmof_dir / "hmof_custom.cif"
+        cif = sa.make_custom_hmof(
+            topology_name=params["topology"],
+            node_bbs=params.get("nodes", {}),
+            edge_bbs=params.get("edge_bbs"),
+            out_path=str(out_path),
+            optimize=params.get("optimize", False),
+        )
+        if n_mofs == 1:
+            single_ctx = dict(ctx)
+            single_ctx["mof"] = Path(cif).stem
+            single_ctx["mof_path"] = str(cif)
+            single_ctx["cif_path"] = str(cif)
+            return agent.run(single_ctx)
+        cif_paths = [cif]
+        for i in range(1, n_mofs):
+            out_i = hmof_dir / f"hmof_custom_{i}.cif"
+            import shutil
+            shutil.copy2(cif, out_i)
+            cif_paths.append(out_i)
+    else:
+        cif_paths = sa.make_random_hmof(
+            n_mofs=n_mofs,
+            save_dir=str(hmof_dir),
+            max_atoms=params.get("max_atoms", 1500),
+            min_cell=params.get("min_cell", 4.5),
+            max_cell=params.get("max_cell", 60.0),
+            random_seed=params.get("random_seed"),
+            optimize=params.get("optimize", False),
+        )
+
+    if n_mofs == 1 and cif_paths:
+        single_ctx = dict(ctx)
+        single_ctx["mof"] = Path(cif_paths[0]).stem
+        single_ctx["mof_path"] = str(cif_paths[0])
+        single_ctx["cif_path"] = str(cif_paths[0])
+        return agent.run(single_ctx)
+
+    batch_ctx = dict(ctx)
+    batch_ctx["mof"] = "database"
+    batch_ctx["cif_dir"] = str(hmof_dir)
+    from batch.workflow import BatchWorkflow
+    return BatchWorkflow(agent).run(batch_ctx)
 
 
 if __name__ == "__main__":

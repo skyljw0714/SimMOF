@@ -24,4 +24,9 @@ vasprun.xml
 .vscode/
 CSD-modified/
 rag/parsed_fulltext/
+.pytest_cache/
+rag/vector_db_SI/
+rag/vector_db_method/
+structure/data/pormake/
+*.log
 

@@ -54,10 +54,25 @@ class ErrorAgent:
             return fail_flag
         return None
 
-    def _invoke_llm(self, system_prompt: str, user_prompt: str) -> str:
+    def _invoke_llm(self, system_prompt: str, user_prompt: str,
+                    agent: str = None, label: str = None) -> str:
+        if agent and label:
+            from core.llm_logging import set_llm_context
+            set_llm_context(agent, label)
         messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
         response = self.llm.invoke(messages)
         return (response.content or "").strip()
+
+    def _ask_user_confirmation(self, label: str, proposed_text: str,
+                                system_prompt: str = "", user_prompt: str = ""):
+        from config import ask_user_confirmation
+
+        def _reinvoke(instruction: str) -> str:
+            revised_user = user_prompt + f"\n\nUser instruction: {instruction}\nRevise your fixes accordingly."
+            return self._invoke_llm(system_prompt, revised_user)
+
+        reinvoke_fn = _reinvoke if (system_prompt and user_prompt) else None
+        return ask_user_confirmation(label, proposed_text, reinvoke_fn=reinvoke_fn)
 
     def patch_file(self, fname: str, block: str) -> None:
         try:
@@ -70,14 +85,40 @@ class ErrorAgent:
         original_content = content
         changed = False
 
+        def replace_exact_block_once(
+            source: str,
+            target: str,
+            replacement: str,
+        ):
+            pattern = re.compile(
+                r"^" + re.escape(target) + r"(?=\r?$)",
+                flags=re.MULTILINE,
+            )
+            updated, count = pattern.subn(
+                lambda _match: replacement,
+                source,
+                count=1,
+            )
+            return updated, count == 1
+
+        def find_action(patterns):
+            for pattern in patterns:
+                match = re.search(pattern, block)
+                if match:
+                    return match
+            return None
+
+        def code_block_text(match, group: int) -> str:
+            return match.group(group).strip("\r\n")
+
         m = re.search(r"ACTION:\s*Overwrite entire file with:\s*```([\s\S]+?)```", block)
         if m:
-            content = m.group(1).strip() + "\n"
+            content = code_block_text(m, 1) + "\n"
             changed = True
 
         m = re.search(r"ACTION:\s*Append at end:\s*```([\s\S]+?)```", block)
         if m:
-            add = m.group(1).strip()
+            add = code_block_text(m, 1)
             if not content.endswith("\n"):
                 content += "\n"
             content += add + "\n"
@@ -85,11 +126,10 @@ class ErrorAgent:
 
         m = re.search(r"ACTION:\s*Remove the line:\s*```([\s\S]+?)```", block)
         if m:
-            target = m.group(1).strip()
-            if target in content:
-                content = content.replace(target, "", 1)
-                changed = True
-            else:
+            target = code_block_text(m, 1)
+            content, replaced = replace_exact_block_once(content, target, "")
+            changed = changed or replaced
+            if not replaced:
                 print(f"[{self.__class__.__name__}] WARNING: remove-target not found in {fname}")
 
         m = re.search(
@@ -97,38 +137,51 @@ class ErrorAgent:
             block,
         )
         if m:
-            old_block = m.group(1).strip()
-            new_block = m.group(2).strip()
-            if old_block in content:
-                content = content.replace(old_block, new_block, 1)
-                changed = True
-            else:
+            old_block = code_block_text(m, 1)
+            new_block = code_block_text(m, 2)
+            content, replaced = replace_exact_block_once(
+                content,
+                old_block,
+                new_block,
+            )
+            changed = changed or replaced
+            if not replaced:
                 print(f"[{self.__class__.__name__}] WARNING: old_block not found in {fname}")
 
-        m = re.search(
-            r"ACTION:\s*After the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
-            block,
+        m = find_action(
+            (
+                r"ACTION:\s*After the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
+                r"ACTION:[^\n]*\n\s*After the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
+            )
         )
         if m:
-            target = m.group(1).strip()
-            insert = m.group(2).strip()
-            if target in content:
-                content = content.replace(target, target + "\n" + insert, 1)
-                changed = True
-            else:
+            target = code_block_text(m, 1)
+            insert = code_block_text(m, 2)
+            content, replaced = replace_exact_block_once(
+                content,
+                target,
+                target + "\n" + insert,
+            )
+            changed = changed or replaced
+            if not replaced:
                 print(f"[{self.__class__.__name__}] WARNING: after-target not found in {fname}")
 
-        m = re.search(
-            r"ACTION:\s*Before the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
-            block,
+        m = find_action(
+            (
+                r"ACTION:\s*Before the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
+                r"ACTION:[^\n]*\n\s*Before the line:\s*```([\s\S]+?)```\s*add:\s*```([\s\S]+?)```",
+            )
         )
         if m:
-            target = m.group(1).strip()
-            insert = m.group(2).strip()
-            if target in content:
-                content = content.replace(target, insert + "\n" + target, 1)
-                changed = True
-            else:
+            target = code_block_text(m, 1)
+            insert = code_block_text(m, 2)
+            content, replaced = replace_exact_block_once(
+                content,
+                target,
+                insert + "\n" + target,
+            )
+            changed = changed or replaced
+            if not replaced:
                 print(f"[{self.__class__.__name__}] WARNING: before-target not found in {fname}")
 
         if changed and content != original_content:

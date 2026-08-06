@@ -47,14 +47,84 @@ def patch_incar_for_charge(incar_path: Path) -> Dict[str, Any]:
     return {"ok": True, "reason": "INCAR patched for charge run", "path": str(incar_path)}
 
 
-def run_bader(vasp_dir: Path) -> Dict[str, Any]:
+def _prepare_reference_density(vasp_dir: Path) -> Dict[str, Any]:
+    aeccar0 = vasp_dir / "AECCAR0"
+    aeccar2 = vasp_dir / "AECCAR2"
+    reference = vasp_dir / "CHGCAR_sum"
+    missing = [
+        str(path)
+        for path in (aeccar0, aeccar2)
+        if not path.exists() or path.stat().st_size == 0
+    ]
+    if missing:
+        return {
+            "status": "missing_reference_inputs",
+            "missing": missing,
+            "reference": str(reference),
+        }
+
+    needs_refresh = (
+        not reference.exists()
+        or reference.stat().st_size == 0
+        or reference.stat().st_mtime
+        < max(aeccar0.stat().st_mtime, aeccar2.stat().st_mtime)
+    )
+    if needs_refresh:
+        try:
+            proc = subprocess.run(
+                ["chgsum.pl", "AECCAR0", "AECCAR2"],
+                cwd=str(vasp_dir),
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:
+            return {
+                "status": "error",
+                "reason": f"chgsum.pl exec failed: {exc}",
+                "reference": str(reference),
+            }
+        if proc.returncode != 0 or not reference.exists():
+            return {
+                "status": "error",
+                "reason": "chgsum.pl failed to create CHGCAR_sum",
+                "returncode": proc.returncode,
+                "stdout_tail": (proc.stdout or "")[-2000:],
+                "stderr_tail": (proc.stderr or "")[-2000:],
+                "reference": str(reference),
+            }
+
+    check = is_valid_chgcar(str(reference))
+    return {
+        "status": "ok" if check.get("ok") else "error",
+        "reference": str(reference),
+        "check": check,
+    }
+
+
+def run_bader(
+    vasp_dir: Path,
+    require_reference: bool = False,
+) -> Dict[str, Any]:
     chgcar = vasp_dir / "CHGCAR"
     if not chgcar.exists():
         return {"status": "error", "reason": "CHGCAR missing", "CHGCAR": str(chgcar)}
 
+    reference_result = _prepare_reference_density(vasp_dir)
+    reference_ok = reference_result.get("status") == "ok"
+    if require_reference and not reference_ok:
+        return {
+            "status": "reference_density_required",
+            "reason": "AECCAR0/AECCAR2 reference density is required for reliable Bader basins",
+            "reference_density": reference_result,
+        }
+
+    command = ["bader", "CHGCAR"]
+    if reference_ok:
+        command.extend(["-ref", "CHGCAR_sum"])
+
     try:
         proc = subprocess.run(
-            ["bader", "CHGCAR"],
+            command,
             cwd=str(vasp_dir),
             capture_output=True,
             text=True,
@@ -80,7 +150,13 @@ def run_bader(vasp_dir: Path) -> Dict[str, Any]:
             "stderr_tail": (proc.stderr or "")[-2000:],
         }
 
-    return {"status": "ok", "ACF": str(acf)}
+    return {
+        "status": "ok",
+        "ACF": str(acf),
+        "reference_mode": "aeccar0_plus_aeccar2" if reference_ok else "valence_only",
+        "reference_density": reference_result,
+        "command": command,
+    }
 
 
 def parse_acf(acf_path: Path) -> Dict[int, float]:

@@ -1,6 +1,14 @@
 import os
 from typing import Dict, Any, Optional, List, Tuple
 
+import numpy as np
+from ase.io import read
+
+from VASP.adsorption import (
+    DEFAULT_DEFORMATION_THRESHOLD_PERCENT,
+    analyze_structure_deformation,
+)
+
 
 class VASPOutputAgent:
     def __init__(self) -> None:
@@ -52,8 +60,21 @@ class VASPOutputAgent:
         return (
             stage == "dos"
             or calc == "dos"
-            or prop in {"dos", "density_of_states", "electronic_density_of_states"}
+            or stage == "projected_dos"
+            or calc == "projected_dos"
+            or prop in {
+                "dos",
+                "density_of_states",
+                "electronic_density_of_states",
+                "projected_dos",
+            }
         )
+
+    def _is_projected_dos_job(self, context: Dict[str, Any]) -> bool:
+        prop = (context.get("property") or "").lower()
+        stage = (context.get("vasp_stage") or "").lower()
+        calc = (context.get("vasp_calc_type") or "").lower()
+        return "projected_dos" in {prop, stage, calc}
 
     def _parse_doscar_header(self, doscar_path: str) -> Optional[Dict[str, Any]]:
         if not os.path.exists(doscar_path):
@@ -136,6 +157,209 @@ class VASPOutputAgent:
             "n_columns": ncol,
             "n_points_preview": len(parsed),
             "preview": parsed,  
+        }
+
+    @staticmethod
+    def _incar_uses_noncollinear_spin(incar_path: str) -> bool:
+        if not os.path.exists(incar_path):
+            return False
+        try:
+            with open(incar_path, "r", errors="ignore") as handle:
+                text = handle.read()
+        except OSError:
+            return False
+        for line in text.splitlines():
+            content = line.split("!", 1)[0].split("#", 1)[0].strip()
+            if not content or "=" not in content:
+                continue
+            key, value = content.split("=", 1)
+            if key.strip().upper() == "LNONCOLLINEAR":
+                return value.strip().upper() in {".TRUE.", "TRUE", "T", "1"}
+        return False
+
+    @staticmethod
+    def _orbital_group_slices(n_orbitals: int) -> Dict[str, Tuple[int, int]]:
+        if n_orbitals >= 16:
+            return {"s": (0, 1), "p": (1, 4), "d": (4, 9), "f": (9, 16)}
+        if n_orbitals >= 9:
+            return {"s": (0, 1), "p": (1, 4), "d": (4, 9)}
+        if n_orbitals == 4:
+            return {"s": (0, 1), "p": (1, 2), "d": (2, 3), "f": (3, 4)}
+        if n_orbitals == 3:
+            return {"s": (0, 1), "p": (1, 2), "d": (2, 3)}
+        if n_orbitals == 1:
+            return {"s": (0, 1)}
+        raise ValueError(
+            f"Unsupported number of projected orbital channels: {n_orbitals}"
+        )
+
+    def _parse_projected_doscar(
+        self,
+        doscar_path: str,
+        structure_path: str,
+        output_path: str,
+        incar_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not os.path.exists(doscar_path):
+            return {
+                "status": "missing_doscar",
+                "doscar": doscar_path,
+            }
+        if not os.path.exists(structure_path):
+            return {
+                "status": "missing_structure",
+                "structure": structure_path,
+                "doscar": doscar_path,
+            }
+
+        try:
+            symbols = read(structure_path).get_chemical_symbols()
+        except Exception as exc:
+            return {
+                "status": "structure_parse_failed",
+                "structure": structure_path,
+                "error": str(exc),
+            }
+
+        try:
+            with open(doscar_path, "r", errors="ignore") as handle:
+                first_header = next(handle).split()
+                atom_count = int(float(first_header[0]))
+                for _ in range(4):
+                    next(handle)
+                total_header = next(handle).split()
+                e_max = float(total_header[0])
+                e_min = float(total_header[1])
+                n_energies = int(float(total_header[2]))
+                efermi = float(total_header[3])
+
+                total_rows = [
+                    [float(value) for value in next(handle).split()]
+                    for _ in range(n_energies)
+                ]
+                if not total_rows:
+                    raise ValueError("DOSCAR contains no total DOS rows")
+
+                if self._incar_uses_noncollinear_spin(incar_path or ""):
+                    component_names = ["charge", "mx", "my", "mz"]
+                elif len(total_rows[0]) == 5:
+                    component_names = ["up", "down"]
+                else:
+                    component_names = ["total"]
+                n_components = len(component_names)
+
+                atom_blocks: List[np.ndarray] = []
+                energies = None
+                n_orbitals = None
+                for atom_index in range(atom_count):
+                    projected_header = next(handle).split()
+                    if len(projected_header) < 3:
+                        raise ValueError(
+                            f"Malformed projected DOS header for atom {atom_index + 1}"
+                        )
+                    block = np.asarray(
+                        [
+                            [float(value) for value in next(handle).split()]
+                            for _ in range(n_energies)
+                        ],
+                        dtype=float,
+                    )
+                    if block.ndim != 2 or block.shape[1] < 2:
+                        raise ValueError(
+                            f"Malformed projected DOS block for atom {atom_index + 1}"
+                        )
+                    if energies is None:
+                        energies = block[:, 0]
+                    elif not np.allclose(energies, block[:, 0], atol=1e-6):
+                        raise ValueError(
+                            f"Inconsistent energy grid in atom block {atom_index + 1}"
+                        )
+
+                    projected_columns = block.shape[1] - 1
+                    if projected_columns % n_components:
+                        raise ValueError(
+                            "Projected DOS columns are incompatible with the "
+                            f"{n_components} spin/magnetization components"
+                        )
+                    current_n_orbitals = projected_columns // n_components
+                    self._orbital_group_slices(current_n_orbitals)
+                    if n_orbitals is None:
+                        n_orbitals = current_n_orbitals
+                    elif n_orbitals != current_n_orbitals:
+                        raise ValueError("Projected DOS atom blocks have different widths")
+
+                    atom_blocks.append(
+                        block[:, 1:].reshape(
+                            n_energies,
+                            current_n_orbitals,
+                            n_components,
+                        )
+                    )
+        except StopIteration:
+            return {
+                "status": "parse_failed",
+                "doscar": doscar_path,
+                "error": (
+                    "DOSCAR ended before all atom-projected blocks were read; "
+                    "the calculation likely did not enable LORBIT."
+                ),
+            }
+        except (OSError, ValueError) as exc:
+            return {
+                "status": "parse_failed",
+                "doscar": doscar_path,
+                "error": str(exc),
+            }
+
+        if atom_count != len(symbols):
+            return {
+                "status": "atom_count_mismatch",
+                "doscar_atoms": atom_count,
+                "structure_atoms": len(symbols),
+                "doscar": doscar_path,
+                "structure": structure_path,
+            }
+
+        raw = np.asarray(atom_blocks, dtype=np.float32)
+        grouped = np.zeros(
+            (atom_count, n_energies, 4, n_components),
+            dtype=np.float32,
+        )
+        group_names = ["s", "p", "d", "f"]
+        group_slices = self._orbital_group_slices(int(n_orbitals or 0))
+        for group_index, group_name in enumerate(group_names):
+            if group_name not in group_slices:
+                continue
+            start, stop = group_slices[group_name]
+            grouped[:, :, group_index, :] = raw[:, :, start:stop, :].sum(axis=2)
+
+        relative_energies = np.asarray(energies, dtype=np.float64) - efermi
+        np.savez_compressed(
+            output_path,
+            energies_ev=relative_energies,
+            densities=grouped,
+            atom_symbols=np.asarray(symbols, dtype="<U3"),
+            orbital_groups=np.asarray(group_names, dtype="<U1"),
+            component_names=np.asarray(component_names, dtype="<U8"),
+            efermi_ev=np.asarray(efermi),
+        )
+        return {
+            "status": "ok",
+            "doscar": doscar_path,
+            "structure": structure_path,
+            "artifact": output_path,
+            "n_atoms": atom_count,
+            "n_energies": n_energies,
+            "orbital_groups": group_names,
+            "components": component_names,
+            "spin_polarized": component_names == ["up", "down"],
+            "fermi_ev": efermi,
+            "energy_reference": "E - E_F",
+            "energy_range_ev": [
+                float(relative_energies.min()),
+                float(relative_energies.max()),
+            ],
+            "doscar_energy_range_ev": [e_min, e_max],
         }
 
     def _is_bandgap_job(self, context: Dict[str, Any]) -> bool:
@@ -333,6 +557,10 @@ class VASPOutputAgent:
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         results: Dict[str, Any] = context.setdefault("results", {})
 
+        if context.get("vasp_status") == "needs_structure_from_user":
+            results["vasp_output_status"] = "blocked_missing_structure"
+            return context
+
         try:
             sys_info = self._get_single_system_info(context)
         except Exception as e:
@@ -378,6 +606,30 @@ class VASPOutputAgent:
         results["vasp_role"] = role
         results["vasp_outcar"] = outcar_path
 
+        threshold = context.get(
+            "structure_deformation_threshold_percent",
+            DEFAULT_DEFORMATION_THRESHOLD_PERCENT,
+        )
+        try:
+            threshold = float(threshold)
+        except (TypeError, ValueError):
+            threshold = DEFAULT_DEFORMATION_THRESHOLD_PERCENT
+        deformation = analyze_structure_deformation(
+            os.path.join(system_dir, "POSCAR"),
+            os.path.join(system_dir, "CONTCAR"),
+            threshold_percent=threshold,
+        )
+        deformation["role"] = role
+        deformation["label"] = label
+        results["structure_deformation"] = deformation
+        context["structure_deformation"] = deformation
+        if deformation.get("threshold_exceeded"):
+            print(
+                "[VASPOutputAgent] WARNING: structural deformation "
+                f"{deformation.get('overall_deformation_percent', 0.0):.2f}% "
+                f">= {threshold:.2f}% for {label}"
+            )
+
         
         if self._is_dos_job(context):
             doscar_path = os.path.join(system_dir, "DOSCAR")
@@ -404,7 +656,24 @@ class VASPOutputAgent:
                 }
                 if preview:
                     results["dos"]["total_dos_preview"] = preview
-                    
+
+        if self._is_projected_dos_job(context):
+            structure_path = os.path.join(system_dir, "POSCAR")
+            artifact_path = os.path.join(system_dir, "projected_dos.npz")
+            projected = self._parse_projected_doscar(
+                os.path.join(system_dir, "DOSCAR"),
+                structure_path,
+                artifact_path,
+                incar_path=os.path.join(system_dir, "INCAR"),
+            )
+            projected.update(
+                {
+                    "role": context.get("projected_dos_role") or role,
+                    "vasp_dir": system_dir,
+                }
+            )
+            results["projected_dos"] = projected
+
         
         if self._is_bandgap_job(context):
             eigenval_path = os.path.join(system_dir, "EIGENVAL")

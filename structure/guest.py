@@ -3,8 +3,13 @@ import pubchempy as pcp
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from ase import Atoms
-from ase.io import write
+from ase.io import write, read as ase_read
 from pathlib import Path
+
+
+class GuestNotFoundError(Exception):
+    pass
+
 
 class GuestLoader:
     def __init__(self, name):
@@ -47,7 +52,7 @@ class GuestLoader:
                 compounds = pcp.get_compounds(self.name, 'name')
 
             if not compounds:
-                raise ValueError(f"No compound found for name: {self.name}")
+                raise GuestNotFoundError(f"No compound found for name: {self.name}")
             if len(compounds) > 1:
                 print("Warning: Multiple compounds found. Using the first one.")
 

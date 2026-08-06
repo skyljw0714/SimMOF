@@ -1,5 +1,6 @@
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -12,8 +13,9 @@ from structure.agent import RASPAStructureAgent
 from input.raspa_input import RASPAInputAgent
 from RASPA.runner import RASPARunner
 from error.raspa_error import RASPAErrorAgent
+from error.structure_regeneration import StructureRegenerationCoordinator
 from output.raspa_output import RASPAOutputAgent
-
+from core.timing import timed_call
 
 class RASPAAgent:
 
@@ -25,26 +27,51 @@ class RASPAAgent:
         self.input_agent = RASPAInputAgent(llm=self.llm)
         self.runner_agent = RASPARunner(llm=self.llm)
         self.error_agent = RASPAErrorAgent(llm=self.llm)
+        self.structure_regeneration = StructureRegenerationCoordinator("raspa")
         self.output_agent = RASPAOutputAgent()
 
         self.chain = make_pipeline_chain(
             steps=[
-                ("ensure_context_defaults", self._ensure_context_defaults),
-                ("RASPAAgent_START", self._marker),
-                ("attach_screening_okdir", self._attach_screening_okdir_from_upstream),
-                ("RASPAStructureAgent", self.structure_agent.run),
-                ("maybe_build_batch", self._maybe_build_pressure_batch),
-                ("RASPAInputAndSubmit", self._input_and_submit), 
-                ("RASPA_SUBMITTED", self._marker),
-                ("RASPAErrorAgent", self.error_agent.run),
-                ("RASPAOutputAgent", self.output_agent.run),
-                ("RASPAAgent_END", self._marker),
+                ("ensure_context_defaults", self._timed("ensure_context_defaults", self._ensure_context_defaults)),
+                ("RASPAAgent_START", self._timed("RASPAAgent_START", self._marker)),
+                ("attach_screening_okdir", self._timed("attach_screening_okdir", self._attach_screening_okdir_from_upstream)),
+                ("RASPAStructureAgent", self._timed("RASPAStructureAgent", self.structure_agent.run)),
+                ("maybe_build_batch", self._timed("maybe_build_batch", self._maybe_build_pressure_batch)),
+                ("RASPAInputAndSubmit", self._timed("RASPAInputAndSubmit", self._input_and_submit)),
+                ("RASPA_SUBMITTED", self._timed("RASPA_SUBMITTED", self._marker)),
+                ("RASPAErrorAgent", self._timed("RASPAErrorAgent", self.error_agent.run)),
+                ("RASPAStructureRegeneration", self._timed("RASPAStructureRegeneration", self.structure_regeneration.run)),
+                ("RASPARetryAfterStructureRegeneration", self._timed("RASPARetryAfterStructureRegeneration", self._retry_after_structure_regeneration)),
+                ("RASPAOutputAgent", self._timed("RASPAOutputAgent", self.output_agent.run)),
+                ("RASPAAgent_END", self._timed("RASPAAgent_END", self._marker)),
             ],
             dump_step=(self._dump_step if self.debug_dump else None),
         )
+    def _timed(self, name, fn):
+        def wrapper(context):
+            return timed_call(
+                name,
+                fn,
+                context,
+                category="raspa_step",
+                context=context,
+            )
+        return wrapper
 
     def _marker(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         return ctx
+
+    def _retry_after_structure_regeneration(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        attempts = int(context.get("structure_regeneration_attempts", 0) or 0)
+        already = int(context.get("_raspa_post_error_structure_regen_reruns", 0) or 0)
+        if attempts <= already:
+            return context
+        if context.get("raspa_state") == "done_ok" or context.get("raspa_status") == "done_ok":
+            return context
+        context["_raspa_post_error_structure_regen_reruns"] = attempts
+        context = self.runner_agent.run(context)
+        context = self.error_agent.run(context)
+        return context
 
     def _infer_pressure_grid_with_llm(self, context: Dict[str, Any], default_single: float = 1.0) -> List[float]:
         qtxt = (context.get("query_text") or context.get("user_query") or "").strip()
@@ -67,6 +94,8 @@ class RASPAAgent:
         human_msg = HumanMessage(content=f'User query:\n"""{qtxt}"""\n\nReturn pressures_bar.')
 
         try:
+            from core.llm_logging import set_llm_context
+            set_llm_context("RASPAAgent", "pressure_grid_inference")
             resp = self.llm.invoke([SystemMessage(content=system_msg), human_msg])
             text = (resp.content or "").strip()
             if text.startswith("```"):
@@ -177,40 +206,101 @@ class RASPAAgent:
                     sub_wd.mkdir(parents=True, exist_ok=True)
                     sub["work_dir"] = str(sub_wd)
 
+                    src_cif = context.get("mof_path")
+                    if src_cif and Path(src_cif).is_file():
+                        dst_cif = sub_wd / Path(src_cif).name
+                        if not dst_cif.exists():
+                            shutil.copy2(src_cif, dst_cif)
+                        sub["mof_path"] = str(dst_cif)
+
                     batch.append(sub)
 
                 context["batch"] = batch
 
         return context
         
+
+            
+            
+                
+
+            
+
+
+
+
+
     def _input_and_submit(self, context: Dict[str, Any]) -> Dict[str, Any]:
         batch = context.get("batch")
 
         if isinstance(batch, list) and len(batch) > 0:
-            
-            
             if "raspa_rag_hints" not in context:
-                
-                _ = self.input_agent._get_raspa_rag_hints(context, top_files=5)
+                timed_call(
+                    "RAG.get_raspa_hints",
+                    self.input_agent._get_raspa_rag_hints,
+                    context,
+                    top_files=5,
+                    category="raspa_input_internal",
+                    context=context,
+                )
 
-            
             common_hints = context.get("raspa_rag_hints")
 
             new_batch = []
-            for subctx in batch:
+            for i, subctx in enumerate(batch):
                 subctx = self._ensure_context_defaults(subctx)
 
                 if common_hints and "raspa_rag_hints" not in subctx:
                     subctx["raspa_rag_hints"] = common_hints
 
-                subctx = self.input_agent.run(subctx)
+                subctx = timed_call(
+                    f"RASPAInputAgent[batch_{i}]",
+                    self.input_agent.run,
+                    subctx,
+                    category="raspa_step",
+                    context=subctx,
+                )
+
+                subctx = timed_call(
+                    f"RASPAPreRunReview[batch_{i}]",
+                    self.error_agent.pre_run_review,
+                    subctx,
+                    category="raspa_step",
+                    context=subctx,
+                )
+
                 subctx = self.runner_agent.run(subctx)
                 new_batch.append(subctx)
 
             context["batch"] = new_batch
             return context
 
-        context = self.input_agent.run(context)
+        if "raspa_rag_hints" not in context:
+            timed_call(
+                "RAG.get_raspa_hints",
+                self.input_agent._get_raspa_rag_hints,
+                context,
+                top_files=5,
+                category="raspa_input_internal",
+                context=context,
+            )
+
+        context = timed_call(
+            "RASPAInputAgent",
+            self.input_agent.run,
+            context,
+            category="raspa_step",
+            context=context,
+        )
+
+        context = timed_call(
+            "RASPAPreRunReview",
+            self.error_agent.pre_run_review,
+            context,
+            category="raspa_step",
+            context=context,
+        )
+
         context = self.runner_agent.run(context)
         return context
 
@@ -242,3 +332,28 @@ class RASPAAgent:
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         return self.chain.invoke(context)
+
+    def resume(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        ctx = dict(context)
+        ctx.setdefault("results", {})
+        ctx["resume_mode"] = True
+
+        batch = ctx.get("batch")
+        has_batch = isinstance(batch, list) and len(batch) > 0
+        work_dir = Path(ctx.get("work_dir", "")) if ctx.get("work_dir") else None
+        has_marker = bool(work_dir and any((work_dir / name).exists() for name in ("START", "DONE", "FAILED")))
+        has_scheduler = bool(ctx.get("scheduler_job_id") or ctx.get("raspa_job_id"))
+
+        if not (has_batch or has_marker or has_scheduler or ctx.get("raspa_status") in {"submitted", "done_ok"}):
+            raise RuntimeError(
+                "RASPAAgent.resume requires a saved context from or after RASPA submission "
+                "(scheduler job id, batch entries, or START/DONE/FAILED marker required)."
+            )
+
+        if ctx.get("raspa_state") != "done_ok" and ctx.get("raspa_status") != "done_ok":
+            ctx = self.error_agent.run(ctx)
+            ctx = self.structure_regeneration.run(ctx)
+            ctx = self._retry_after_structure_regeneration(ctx)
+
+        ctx = self.output_agent.run(ctx)
+        return ctx

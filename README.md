@@ -89,8 +89,20 @@
   - Packmol (21.1.0)
   - CCDC / CSD Python API
   - Moltemplate
+  - EQeq (charge equilibration binary, bundled at `charge/EQeq/eqeq`)
 
-  ### CCDC / CSD Python API
+  ### External Environments
+
+  A few optional features run in their own dedicated conda environment instead of the main `simmof` environment. SimMOF dispatches to them via subprocess, so installing or upgrading packages in these environments never affects `simmof` itself. None of the packages below need to be installed inside `simmof`.
+
+  | Environment | Purpose | Required packages | Configuration |
+  |---|---|---|---|
+  | `csd_api` | CCDC/CSD structure lookup (`structure/agent.py`) and solvent removal (`structure/SAMOSA/`) | `ccdc` (CSD Python API), `mendeleev` | `SIMMOF_CSD_API_CONDA_ENV_NAME` / `SIMMOF_CSD_API_CONDA_ENV_PREFIX` / `SIMMOF_CSD_API_PYTHON` |
+  | `pormake` | Random/custom hMOF CIF generation (`structure/agent.py`) | `pormake` | `SIMMOF_PORMAKE_CONDA_ENV_NAME` / `SIMMOF_PORMAKE_CONDA_ENV_PREFIX` / `SIMMOF_PORMAKE_PYTHON` |
+  | `mofsimplify` | MOFSimplify ML property prediction (`tool/mofsimplify_predict.py`) | `molSimplify`, `scikit-learn`, `tensorflow`, `numpy`, `pandas` | Path is hardcoded in `tool/utils.py` (`.../anaconda3/envs/mofsimplify/bin/python`) — edit it directly if your environment lives elsewhere |
+  | `mofid` | MOFid-based structural identification for RAG (`rag/agent.py`) | `mofid` | Path is hardcoded in `rag/agent.py` (`.../anaconda3/envs/mofid/bin/python`) — edit it directly if your environment lives elsewhere |
+
+  #### CCDC / CSD Python API
 
   `structure/agent.py` depends on the CCDC Python API, so a working CCDC installation is required for structure-agent functionality.
 
@@ -101,7 +113,7 @@
   Notes:
   - You need a valid CCDC customer number and activation key to obtain the latest CSD Suite installers.
   - The CSD Python API is installed with the CSD installation, and CCDC also states that it can be installed manually using provided conda packages.
-  - Make sure the CCDC Python API is available in the Python environment used to run SimMOF.
+  - Install it into its own `csd_api` conda environment (see table above) — it does not need to go into `simmof`.
   - If CCDC is not installed, structure-agent features that rely on `ccdc` will not work.
 
   ### Moltemplate installation

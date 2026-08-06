@@ -4,9 +4,9 @@ import string
 import re
 from pathlib import Path
 from config import RASPA_DIR as _RASPA_DIR, RASPA_SIMULATE_BIN
+from core.job_manager import get_job_manager, parse_scheduler_job_id, record_job_event
+from core.resource_allocator import ResourceAllocator, count_atoms_from_context
 
-RASPA_QSUB_QUEUE = "long"
-RASPA_QSUB_RESOURCES = "nodes=1:ppn=8:aa"
 RASPA_DIR = _RASPA_DIR
 
 
@@ -26,13 +26,13 @@ class RASPARunner:
         suffix = safe[:remain] if safe else ""
         return f"{rand}_{suffix}" if suffix else rand
 
-    def _write_qsub_script(self, work_dir: Path, pbs_job_name: str) -> Path:
+    def _write_qsub_script(self, work_dir: Path, pbs_job_name: str, nodes_string: str, queue: str) -> Path:
         qsub_file = work_dir / "run_raspa.qsub"
         script = f"""#!/bin/sh
 #PBS -N {pbs_job_name}
 #PBS -r n
-#PBS -q {RASPA_QSUB_QUEUE}
-#PBS -l {RASPA_QSUB_RESOURCES}
+#PBS -q {queue}
+#PBS -l {nodes_string}
 #PBS -e {work_dir}/pbs.err
 #PBS -o {work_dir}/pbs.out
 
@@ -83,11 +83,14 @@ exit $rc
         pbs_job_name = self._make_unique_pbs_name(base_job_name)
         context["pbs_job_name"] = pbs_job_name
 
-        qsub_file = self._write_qsub_script(work_dir, pbs_job_name)
+        n_atoms = count_atoms_from_context(context)
+        calc_type = context.get("property", "")
+        spec = ResourceAllocator().recommend("RASPA", calc_type, n_atoms, context)
+        qsub_file = self._write_qsub_script(work_dir, pbs_job_name, spec.pbs_nodes_string(), spec.queue)
 
         try:
             result = subprocess.run(
-                ["qas", str(qsub_file)],
+                ["qsub", str(qsub_file)],
                 cwd=work_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -99,25 +102,61 @@ exit $rc
             context["results"]["raspa_submit_status"] = "error"
             context["results"]["raspa_submit_exception"] = str(e)
             context["raspa_status"] = "submit_failed"
-            print("[RASPARunner] qas submission failed:", e)
+            record_job_event(
+                context,
+                "submit_failed",
+                message="RASPA qsub submission raised",
+                metadata={"qsub_path": str(qsub_file)},
+                last_error=str(e),
+            )
+            print("[RASPARunner] qsub submission failed:", e)
             return context
 
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         if stderr:
-            print(f"[RASPARunner] qas stderr: {repr(stderr)}")
+            print(f"[RASPARunner] qsub stderr: {repr(stderr)}")
 
         context["results"] = dict(context.get("results") or {})
         context["results"]["raspa_qsub_file"] = str(qsub_file)
         context["results"]["raspa_submit_returncode"] = result.returncode
         context["results"]["raspa_submit_stdout"] = stdout
         context["results"]["raspa_submit_stderr"] = stderr
+        context["scheduler_job_id"] = parse_scheduler_job_id(stdout)
 
         if result.returncode != 0:
             context["raspa_status"] = "submit_failed"
             context["raspa_job_id"] = None
-            print("[RASPARunner] qas returned non-zero code:", result.returncode)
+            print("[RASPARunner] qsub returned non-zero code:", result.returncode)
         else:
             context["raspa_status"] = "submitted"
+            context["raspa_job_id"] = context.get("scheduler_job_id")
+
+        submit_status = "submitted" if result.returncode == 0 else "submit_failed"
+        get_job_manager().record_submission(
+            context,
+            qsub_path=str(qsub_file),
+            returncode=result.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            status=submit_status,
+            metadata={
+                "pbs_job_name": pbs_job_name,
+                "software": "RASPA",
+                "resource_allocation": {
+                    "software": "RASPA",
+                    "calc_type": calc_type,
+                    "n_atoms": n_atoms,
+                    "nodes": spec.nodes,
+                    "ppn": spec.ppn,
+                    "np": spec.np,
+                    "queue": spec.queue,
+                    "rationale": spec.rationale,
+                },
+                "runtime_estimate": context.get("resource_runtime_estimate"),
+                "resource_allocation_user_override": context.get("resource_allocation_user_override"),
+            },
+        )
+        record_job_event(context, submit_status, message="RASPA qsub submission finished")
 
         return context

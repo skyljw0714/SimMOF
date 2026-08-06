@@ -2,6 +2,8 @@ import os
 import subprocess
 from typing import Dict, Any, Optional
 
+from core.job_manager import get_job_manager, record_job_event
+
 
 class VASPRunner:
     def __init__(self):
@@ -56,13 +58,13 @@ class VASPRunner:
         print(f"[VASPRunner] Submitting job for {label} in {system_dir}")
         try:
             proc = subprocess.run(
-                ["qas", qsub_path],
+                ["qsub", qsub_path],
                 cwd=system_dir,
                 capture_output=True,
                 text=True,
             )
         except Exception as e:
-            print(f"[VASPRunner] ERROR: failed to run qas {qsub_path}: {e}")
+            print(f"[VASPRunner] ERROR: failed to run qsub {qsub_path}: {e}")
             result["status"] = "submit_error"
             result["stderr"] = str(e)
             return result
@@ -88,7 +90,23 @@ class VASPRunner:
         return result
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-                
+        if context.get("vasp_status") == "needs_structure_from_user":
+            context["vasp_submitted"] = False
+            context["vasp_submit"] = {
+                "status": "blocked_missing_structure"
+            }
+            context.setdefault("results", {})[
+                "vasp_run_status"
+            ] = "blocked_missing_structure"
+            return context
+
+        if context.get("vasp_structure_precheck_status") == "failed":
+            print("[VASPRunner] Refusing to submit because VASP structure precheck failed.")
+            context.setdefault("results", {})["vasp_run_status"] = "failed_structure_precheck"
+            context["vasp_submitted"] = False
+            context["vasp_submit"] = {"status": "failed_structure_precheck"}
+            return context
+
         system_info = self._get_active_system_info(context)
         if system_info is None:
             print("[VASPRunner] ERROR: missing vasp_system (or vasp_dir/vasp_label) in context.")
@@ -102,10 +120,29 @@ class VASPRunner:
         
         context["vasp_submit"] = submit_res
         context["vasp_job_id"] = submit_res.get("job_id")
+        context["scheduler_job_id"] = submit_res.get("job_id")
         context["vasp_submitted"] = (submit_res.get("status") == "submitted")
 
         results = context.setdefault("results", {})
         results["vasp_run_status"] = submit_res.get("status", "unknown")
         results["vasp_submit_returncode"] = submit_res.get("returncode")
+        submit_status = "submitted" if submit_res.get("status") == "submitted" else "submit_failed"
+        get_job_manager().record_submission(
+            context,
+            qsub_path=submit_res.get("qsub_path", ""),
+            returncode=submit_res.get("returncode") or -1,
+            stdout=submit_res.get("stdout") or "",
+            stderr=submit_res.get("stderr") or "",
+            status=submit_status,
+            scheduler_job_id=submit_res.get("job_id"),
+            metadata={
+                "software": "VASP",
+                "vasp_label": submit_res.get("label"),
+                "resource_allocation": context.get("resource_allocation"),
+                "runtime_estimate": context.get("resource_runtime_estimate"),
+                "resource_allocation_user_override": context.get("resource_allocation_user_override"),
+            },
+        )
+        record_job_event(context, submit_status, message="VASP qsub submission finished")
 
         return context

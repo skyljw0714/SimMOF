@@ -1,7 +1,7 @@
 from typing import Dict, Any
 from pathlib import Path
 import json
-
+from core.timing import timed_call
 from langchain_core.runnables import RunnableLambda
 
 from config import working_dir, LLM_DEFAULT
@@ -12,6 +12,7 @@ from input.zeopp_input import ZeoppInputAgent
 from Zeopp.runner import ZeoppRunner
 from output.zeopp_output import ZeoppOutputAgent
 from error.zeopp_error import ZeoppErrorAgent
+from error.structure_regeneration import StructureRegenerationCoordinator
 
 
 class ZeoppAgent:
@@ -31,24 +32,27 @@ class ZeoppAgent:
             zeopp_runner=self.runner_agent,
             zeopp_input_agent=self.input_agent,
         )
+        self.structure_regeneration = StructureRegenerationCoordinator("zeopp")
 
         
+
         self.chain = make_pipeline_chain(
             steps=[
-                ("ensure_context_defaults", self._ensure_context_defaults),
-                ("ZeoppAgent_START", self._start_marker),
-                ("ZeoppStructureAgent", self.structure_agent.run),
-                ("ZeoppInputAgent", self.input_agent.run),
-                ("ZeoppRunner", self.runner_agent.run),
-                ("ZeoppErrorAgent", self.error_agent.run),
-                ("ZeoppOutputAgent", self.output_agent.run),
-                ("ZeoppAgent_END", self._end_marker),
+                ("ensure_context_defaults", self._timed_step("ensure_context_defaults", self._ensure_context_defaults)),
+                ("ZeoppAgent_START", self._timed_step("ZeoppAgent_START", self._start_marker)),
+                ("ZeoppStructureAgent", self._timed_step("ZeoppStructureAgent", self.structure_agent.run)),
+                ("ZeoppInputAgent", self._timed_step("ZeoppInputAgent", self.input_agent.run)),
+                ("ZeoppPreRunReview", self._timed_step("ZeoppPreRunReview", self.error_agent.pre_run_review)),
+                ("ZeoppRunner", self._timed_step("ZeoppRunner", self.runner_agent.run)),
+                ("ZeoppErrorAgent", self._timed_step("ZeoppErrorAgent", self.error_agent.run)),
+                ("ZeoppStructureRegeneration", self._timed_step("ZeoppStructureRegeneration", self.structure_regeneration.run)),
+                ("ZeoppRetryAfterStructureRegeneration", self._timed_step("ZeoppRetryAfterStructureRegeneration", self._retry_after_structure_regeneration)),
+                ("ZeoppOutputAgent", self._timed_step("ZeoppOutputAgent", self.output_agent.run)),
+                ("ZeoppAgent_END", self._timed_step("ZeoppAgent_END", self._end_marker)),
             ],
             dump_step=(self._dump_step if self.debug_dump else None),
         )
 
-    
-    
     
     def _start_marker(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         
@@ -78,6 +82,18 @@ class ZeoppAgent:
 
         return context
 
+    def _retry_after_structure_regeneration(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        attempts = int(context.get("structure_regeneration_attempts", 0) or 0)
+        already = int(context.get("_zeopp_post_error_structure_regen_reruns", 0) or 0)
+        if attempts <= already:
+            return context
+        if context.get("results", {}).get("zeopp_status") == "ok":
+            return context
+        context["_zeopp_post_error_structure_regen_reruns"] = attempts
+        context = self.runner_agent.run(context)
+        context = self.error_agent.run(context)
+        return context
+
     
     
     
@@ -97,7 +113,18 @@ class ZeoppAgent:
             print(f"[ZeoppAgent] Warning: context dump failed at {step_agent}: {e}")
 
     
-    
+    def _timed_step(self, step_name: str, fn):
+        def wrapper(ctx: Dict[str, Any]) -> Dict[str, Any]:
+            return timed_call(
+                step_name,
+                fn,
+                ctx,
+                category="zeopp_step",
+                context=ctx,
+                extra={"parent_agent": "ZeoppAgent"},
+            )
+
+        return wrapper
     
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         

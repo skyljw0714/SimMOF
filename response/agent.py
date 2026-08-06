@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Dict, Any, Tuple
 
 from config import LLM_DEFAULT
@@ -98,6 +99,159 @@ class ResponseAgent:
 
         return {}
 
+    @staticmethod
+    def _collect_vasp_adsorption_summaries(
+        context: Dict[str, Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        jobs_by_plan: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for node in ResponseAgent._walk(context):
+            if (node.get("property") or "").lower() != "binding_energy":
+                continue
+            role = str(
+                node.get("vasp_role")
+                or (node.get("vasp_system") or {}).get("role")
+                or ""
+            ).lower()
+            if role not in {"mof", "guest", "complex"}:
+                job_id = str(node.get("job_id") or "")
+                role = next(
+                    (
+                        candidate
+                        for candidate in ("mof", "guest", "complex")
+                        if job_id.endswith(f"_{candidate}")
+                    ),
+                    "",
+                )
+            if role not in {"mof", "guest", "complex"}:
+                continue
+            plan_name = str(node.get("plan_name") or node.get("job_name") or "")
+            if not plan_name:
+                continue
+            existing = jobs_by_plan.setdefault(plan_name, {}).get(role)
+            energy = (node.get("results") or {}).get("vasp_energy_ev")
+            if existing is None or (
+                (existing.get("results") or {}).get("vasp_energy_ev") is None
+                and energy is not None
+            ):
+                jobs_by_plan[plan_name][role] = node
+
+        summaries: Dict[str, Dict[str, Any]] = {}
+        for plan_name, jobs in jobs_by_plan.items():
+            if not all(role in jobs for role in ("mof", "guest", "complex")):
+                continue
+            try:
+                e_mof = float(jobs["mof"]["results"]["vasp_energy_ev"])
+                e_guest = float(jobs["guest"]["results"]["vasp_energy_ev"])
+                e_complex = float(jobs["complex"]["results"]["vasp_energy_ev"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            complex_results = jobs["complex"].get("results") or {}
+            interaction = complex_results.get("interaction_energy") or {}
+            deformation = complex_results.get("structure_deformation") or {}
+            e_relaxed = e_complex - e_mof - e_guest
+            summary: Dict[str, Any] = {
+                "status": "ok",
+                "plan_name": plan_name,
+                "mof": jobs["complex"].get("mof") or jobs["mof"].get("mof"),
+                "guest": jobs["complex"].get("guest") or jobs["guest"].get("guest"),
+                "E_ads_relaxed_ev": e_relaxed,
+                "E_complex_opt_ev": e_complex,
+                "E_mof_opt_ev": e_mof,
+                "E_guest_opt_ev": e_guest,
+                "relaxed_equation": (
+                    "E_ads_relaxed = E(MOF+guest,opt) - E(MOF,opt) - E(guest,opt)"
+                ),
+                "relaxed_energy_includes": [
+                    "direct host-guest interaction",
+                    "MOF deformation",
+                    "guest deformation",
+                    "cell deformation when the cell was relaxed",
+                ],
+                "structure_deformation": deformation,
+                "deformation_threshold_exceeded": bool(
+                    deformation.get("threshold_exceeded")
+                ),
+                "interaction_energy_status": interaction.get("status"),
+            }
+            if interaction.get("status") == "ok" and interaction.get("E_int_ev") is not None:
+                e_int = float(interaction["E_int_ev"])
+                summary.update(
+                    {
+                        "E_int_ev": e_int,
+                        "interaction_equation": interaction.get("equation"),
+                        "deformation_contribution_ev": e_relaxed - e_int,
+                    }
+                )
+            elif interaction:
+                summary["interaction_energy"] = interaction
+            summaries[plan_name] = summary
+        return summaries
+
+    @staticmethod
+    def _format_adsorption_notice(
+        summaries: Dict[str, Dict[str, Any]],
+        query_text: str,
+    ) -> str:
+        if not summaries:
+            return ""
+        korean = bool(re.search(r"[가-힣]", query_text or ""))
+        lines = []
+        for summary in summaries.values():
+            target = "–".join(
+                str(value)
+                for value in (summary.get("mof"), summary.get("guest"))
+                if value
+            ) or summary.get("plan_name", "VASP adsorption")
+            e_relaxed = summary.get("E_ads_relaxed_ev")
+            if korean:
+                lines.append(
+                    f"{target}: relaxed adsorption energy(변형 효과 포함) = "
+                    f"{float(e_relaxed):.6f} eV."
+                )
+            else:
+                lines.append(
+                    f"{target}: relaxed adsorption energy (including deformation effects) = "
+                    f"{float(e_relaxed):.6f} eV."
+                )
+
+            deformation = summary.get("structure_deformation") or {}
+            if summary.get("deformation_threshold_exceeded"):
+                measured = float(deformation.get("overall_deformation_percent") or 0.0)
+                threshold = float(deformation.get("threshold_percent") or 20.0)
+                if korean:
+                    lines.append(
+                        f"구조 변형 경고: {measured:.2f}%로 설정 임계값 "
+                        f"{threshold:.2f}% 이상입니다."
+                    )
+                else:
+                    lines.append(
+                        f"Structural-deformation warning: {measured:.2f}% is at or above "
+                        f"the {threshold:.2f}% threshold."
+                    )
+
+            if summary.get("E_int_ev") is not None:
+                if korean:
+                    lines.append(
+                        "최적화된 결합 구조의 frozen interaction energy = "
+                        f"{float(summary['E_int_ev']):.6f} eV."
+                    )
+                else:
+                    lines.append(
+                        "Frozen interaction energy at the optimized complex geometry = "
+                        f"{float(summary['E_int_ev']):.6f} eV."
+                    )
+            elif summary.get("deformation_threshold_exceeded"):
+                status = summary.get("interaction_energy_status") or "not_available"
+                if korean:
+                    lines.append(
+                        f"frozen interaction energy는 아직 제시할 수 없습니다(상태: {status})."
+                    )
+                else:
+                    lines.append(
+                        f"Frozen interaction energy is not available (status: {status})."
+                    )
+        return "\n".join(lines)
+
     
     
     
@@ -112,6 +266,10 @@ class ResponseAgent:
         
         upstream_merged, upstream_namespaced = self._collect_upstream_results(context)
         results = self._merge_into_context_results(context, upstream_merged)
+
+        adsorption_summaries = self._collect_vasp_adsorption_summaries(context)
+        if adsorption_summaries:
+            results["vasp_adsorption_energies"] = adsorption_summaries
 
         
         
@@ -156,6 +314,8 @@ class ResponseAgent:
                 "Write a short, clear summary for the user."
             )
 
+            from core.llm_logging import set_llm_context
+            set_llm_context("ResponseAgent", "final_response_batch")
             response = self.llm.invoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
@@ -202,6 +362,9 @@ class ResponseAgent:
             "  * Explicitly mention important numerical values that appear there.\n"
             "- Otherwise, fall back to the raw 'results' data.\n"
             "- If the status indicates failure or missing data, do NOT invent numbers; explain that it did not complete properly.\n"
+            "- For VASP adsorption, call E_ads_relaxed the relaxed adsorption energy (including deformation effects), not a direct interaction energy.\n"
+            "- If E_int_ev is available, explicitly report both E_ads_relaxed_ev and E_int_ev with their distinct meanings.\n"
+            "- If deformation_threshold_exceeded is true, explicitly warn the user that structural deformation reached or exceeded 20%.\n"
             "- Keep the answer concise: at most 10 sentences in total.\n"
             "- Answer in the same language as the user query if it is clear; otherwise default to English.\n"
         )
@@ -213,12 +376,20 @@ class ResponseAgent:
             "Write a short explanation for the user."
         )
 
+        from core.llm_logging import set_llm_context
+        set_llm_context("ResponseAgent", "final_response")
         response = self.llm.invoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),
         ])
 
+        mandatory_notice = self._format_adsorption_notice(
+            adsorption_summaries,
+            query_text,
+        )
         answer_text = response.content
+        if mandatory_notice:
+            answer_text = f"{mandatory_notice}\n\n{answer_text}"
         results["final_response"] = answer_text
         context["results"] = results
 

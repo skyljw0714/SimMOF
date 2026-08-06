@@ -1,205 +1,34 @@
 import json
 from typing import Optional
 
-VASP_RELAX_INCAR_DEFAULTS = {
-    "GGA": "PE",
-    "ISMEAR": "0",
-    "SIGMA": "0.05",
-    "ENCUT": "400",
-    "EDIFF": "1E-6",
-    "EDIFFG": "-0.01",
-    "IBRION": "2",
-    "ISIF": "3",
-    "NSW": "500",
-    "LREAL": "Auto",
-    "KSPACING": "0.3",
-    "KGAMMA": ".TRUE.",
-    "NCORE": "4",
-    "LPLANE": ".TRUE.",
-    "IALGO": "38",
-    "ISPIN": "2",
-}
+VASP_GENERIC_TEMPLATE = """System = {system}
 
-VASP_DOS_INCAR_DEFAULTS = {
-    "GGA": "PE",
-    "ENCUT": "520",
-    "EDIFF": "1E-6",
-    "ISMEAR": "0",
-    "SIGMA": "0.05",
-    "ALGO": "Normal",
-    "NELM": "200",
-    "ISYM": "0",
-    "IBRION": "-1",
-    "NSW": "0",
-    "LORBIT": "11",
-    "NEDOS": "2000",
-    "PREC": "Accurate",
-    "ADDGRID": ".TRUE.",
-    "LASPH": ".TRUE.",
-    "LREAL": "Auto",
-    "KGAMMA": ".TRUE.",
-    "LWAVE": ".FALSE.",
-    "LCHARG": ".FALSE.",
-}
+# GGA      = ...
+# ISMEAR   = ...
+# SIGMA    = ...
+# EDIFF    = ...
+# LREAL    = ...
+# KGAMMA   = ...
 
-VASP_BANDGAP_INCAR_DEFAULTS = {
-    "GGA": "PE",
-    "ENCUT": "520",
-    "EDIFF": "1E-6",
-    "ALGO": "Normal",
-    "NELM": "200",
-    "ISYM": "0",
-    "IBRION": "-1",
-    "NSW": "0",
-    "ISMEAR": "0",
-    "SIGMA": "0.05",
-    "PREC": "Accurate",
-    "ADDGRID": ".TRUE.",
-    "LASPH": ".TRUE.",
-    "LREAL": "Auto",
-    "KGAMMA": ".TRUE.",
-    "LWAVE": ".FALSE.",
-    "LCHARG": ".FALSE.",
-}
-
-VASP_FORMAT = f'''
-System = {{system}}
-
-GGA = {VASP_RELAX_INCAR_DEFAULTS["GGA"]}
-ISMEAR = {VASP_RELAX_INCAR_DEFAULTS["ISMEAR"]}
-SIGMA = {VASP_RELAX_INCAR_DEFAULTS["SIGMA"]}
-ENCUT = {VASP_RELAX_INCAR_DEFAULTS["ENCUT"]}
-EDIFF = {VASP_RELAX_INCAR_DEFAULTS["EDIFF"]}
-EDIFFG = {VASP_RELAX_INCAR_DEFAULTS["EDIFFG"]}
-IBRION = {VASP_RELAX_INCAR_DEFAULTS["IBRION"]}
-ISIF = {{ISIF}}
-NSW = {VASP_RELAX_INCAR_DEFAULTS["NSW"]}
-LREAL = {VASP_RELAX_INCAR_DEFAULTS["LREAL"]}
-KSPACING = {VASP_RELAX_INCAR_DEFAULTS["KSPACING"]}
-KGAMMA = {VASP_RELAX_INCAR_DEFAULTS["KGAMMA"]} #Never change
-
-IVDW = # for dispersion correction
-
-NCORE    =   {VASP_RELAX_INCAR_DEFAULTS["NCORE"]}
-LPLANE   =   {VASP_RELAX_INCAR_DEFAULTS["LPLANE"]}
-IALGO    =   {VASP_RELAX_INCAR_DEFAULTS["IALGO"]}
-ISPIN   =   {VASP_RELAX_INCAR_DEFAULTS["ISPIN"]}
-'''
-
-VASP_DOS_FORMAT = f'''
-System = {{system}}
-
-# ---------- Electronic ----------
-GGA    = {VASP_DOS_INCAR_DEFAULTS["GGA"]}
-ENCUT  = {VASP_DOS_INCAR_DEFAULTS["ENCUT"]}
-EDIFF  = {VASP_DOS_INCAR_DEFAULTS["EDIFF"]}
-ISMEAR = {VASP_DOS_INCAR_DEFAULTS["ISMEAR"]}
-SIGMA  = {VASP_DOS_INCAR_DEFAULTS["SIGMA"]}
-ALGO   = {VASP_DOS_INCAR_DEFAULTS["ALGO"]}
-NELM   = {VASP_DOS_INCAR_DEFAULTS["NELM"]}
-ISYM   = {VASP_DOS_INCAR_DEFAULTS["ISYM"]}
-
-# ---------- Static (no ionic relaxation) ----------
-IBRION = {VASP_DOS_INCAR_DEFAULTS["IBRION"]}
-NSW    = {VASP_DOS_INCAR_DEFAULTS["NSW"]}
-
-# ---------- DOS / projections ----------
-LORBIT = {VASP_DOS_INCAR_DEFAULTS["LORBIT"]}
-NEDOS  = {VASP_DOS_INCAR_DEFAULTS["NEDOS"]}
-# For DOS after a converged run:
-# - If CHGCAR exists: ICHARG = 11
-# - Else:            ICHARG = 2
-ICHARG = {{ICHARG}}
-
-# ---------- Grids / stability ----------
-PREC    = {VASP_DOS_INCAR_DEFAULTS["PREC"]}
-ADDGRID = {VASP_DOS_INCAR_DEFAULTS["ADDGRID"]}
-LASPH   = {VASP_DOS_INCAR_DEFAULTS["LASPH"]}
-LREAL   = {VASP_DOS_INCAR_DEFAULTS["LREAL"]}
-KGAMMA  = {VASP_DOS_INCAR_DEFAULTS["KGAMMA"]}
-
-# ---------- I/O ----------
-LWAVE  = {VASP_DOS_INCAR_DEFAULTS["LWAVE"]}
-LCHARG = {VASP_DOS_INCAR_DEFAULTS["LCHARG"]}
-'''
-
-VASP_BG_FORMAT = f"""
-System = {{system}}
-
-# ---------- Electronic ----------
-GGA    = {VASP_BANDGAP_INCAR_DEFAULTS["GGA"]}
-ENCUT  = {VASP_BANDGAP_INCAR_DEFAULTS["ENCUT"]}
-EDIFF  = {VASP_BANDGAP_INCAR_DEFAULTS["EDIFF"]}
-ALGO   = {VASP_BANDGAP_INCAR_DEFAULTS["ALGO"]}
-NELM   = {VASP_BANDGAP_INCAR_DEFAULTS["NELM"]}
-ISYM   = {VASP_BANDGAP_INCAR_DEFAULTS["ISYM"]}
-
-# ---------- Static (no ionic relaxation) ----------
-IBRION = {VASP_BANDGAP_INCAR_DEFAULTS["IBRION"]}
-NSW    = {VASP_BANDGAP_INCAR_DEFAULTS["NSW"]}
-
-# ---------- Smearing (band gap / eigenvalues) ----------
-# If you use tetrahedron method (ISMEAR=-5), need enough k-points (NKPT >= 4).
-# For Gamma-only large MOFs, keep ISMEAR=0 + small SIGMA.
-ISMEAR = {VASP_BANDGAP_INCAR_DEFAULTS["ISMEAR"]}
-SIGMA  = {VASP_BANDGAP_INCAR_DEFAULTS["SIGMA"]}
-
-# ---------- Grids / stability ----------
-PREC    = {VASP_BANDGAP_INCAR_DEFAULTS["PREC"]}
-ADDGRID = {VASP_BANDGAP_INCAR_DEFAULTS["ADDGRID"]}
-LASPH   = {VASP_BANDGAP_INCAR_DEFAULTS["LASPH"]}
-LREAL   = {VASP_BANDGAP_INCAR_DEFAULTS["LREAL"]}
-KGAMMA  = {VASP_BANDGAP_INCAR_DEFAULTS["KGAMMA"]}
-
-# ---------- I/O ----------
-LWAVE  = {VASP_BANDGAP_INCAR_DEFAULTS["LWAVE"]}
-LCHARG = {VASP_BANDGAP_INCAR_DEFAULTS["LCHARG"]}
+# ENCUT    = ...
+# IBRION   = ...
+# NSW      = ...
+# EDIFFG   = ...
+# ISIF     = ...
+# KSPACING = ...
+# NCORE    = ...
+# LPLANE   = ...
+# IALGO    = ...
+# NELM     = ...
+# ISYM     = ...
+# ISPIN    = ...
+# MAGMOM   = ...
+# IVDW     = ...
 """
 
-def get_relax_isif(query: dict) -> str:
-    stage = (query.get("vasp_stage") or "").lower()
-    role = (query.get("vasp_role") or "").lower()
-    job_id = (query.get("job_id") or "").lower()
-
-    if stage == "guest" or role == "guest" or job_id.endswith("_guest"):
-        return "2"
-
-    return "3"
 
 def render_vasp_format(query: dict) -> str:
-    vasp_format = select_vasp_format(query)
-
-    if vasp_format == VASP_FORMAT:
-        return vasp_format.format(
-            system="{system}",
-            ISIF=get_relax_isif(query),
-        )
-
-    if vasp_format == VASP_DOS_FORMAT:
-        return vasp_format.format(
-            system="{system}",
-            ICHARG="{ICHARG}",
-        )
-
-    if vasp_format == VASP_BG_FORMAT:
-        return vasp_format.format(
-            system="{system}",
-        )
-
-    return vasp_format
-    
-def select_vasp_format(query: dict) -> str:
-    stage = (query.get("vasp_stage") or "").lower()
-    calc = (query.get("vasp_calc_type") or "").lower()
-    prop = (query.get("property") or "").lower()
-
-    if stage == "dos" or calc == "dos" or prop in ["dos", "density_of_states", "electronic_density_of_states"]:
-        return VASP_DOS_FORMAT
-
-    if stage in ["bandgap", "band_gap"] or calc in ["bandgap", "band_gap"] or prop in ["band_gap", "bandgap", "electronic_band_gap"]:
-        return VASP_BG_FORMAT
-
-    return VASP_FORMAT
+    return VASP_GENERIC_TEMPLATE
 
 
 def create_vasp_incar_prompt(
@@ -207,27 +36,50 @@ def create_vasp_incar_prompt(
     vasp_format: str,
     method_paragraph: Optional[str] = None,
     rag_hints: str = "",
+    manual_hints: str = "",
 ):
     prompt = f"""
 You are a VASP input file generation expert for MOF simulations.
-Below is the standard VASP INCAR template. Follow its style and produce a clean INCAR.
+Generate a complete VASP INCAR file based on the generic template and simulation request below.
 
+Generic INCAR template:
 {vasp_format}
 
 Rules:
 - Output ONLY the INCAR content (no markdown fences, no explanation).
-- Follow the provided INCAR template as closely as possible.
-- Preserve the template’s existing tags, values, ordering, and overall style unless the simulation request explicitly requires a change.
 - Do NOT duplicate tags (each key must appear at most once).
-- Do not change template defaults unnecessarily.
+- Follow the provided INCAR template as closely as possible.
+- Fill in the commented-out tags with appropriate values for the simulation type described in the request.
+- Add any additional tags required for this specific calculation type (e.g., ALGO, PREC, LORBIT for DOS; ISIF, EDIFFG for relaxation).
 - Use conservative, general-purpose defaults unless the request explicitly requires otherwise.
-- If the request is DOS (static): ensure IBRION=-1 and NSW=0, and include DOS-related tags.
+- Always specify GGA explicitly; do not leave the exchange-correlation functional undefined.
+- Structurally relax all system components when the calculation involves ionic degrees of freedom (e.g., vasp_stage indicates mof_opt, guest, or complex optimization).
+- ISYM=0 is required when ionic positions may break the initial crystal symmetry during structural optimization.
+- Periodic framework systems (MOF, complex) require optimization of both atomic positions and lattice parameters to reach the true energy minimum. Isolated molecules in a vacuum box should be relaxed with fixed cell dimensions to avoid unphysical cell deformation.
+- Van der Waals interactions are important in MOF–guest systems; choose the dispersion treatment based on the full property calculation and apply it consistently to all contributing MOF, guest, and complex energies, including isolated references.
+- ISTART controls whether previously converged wavefunctions are reused; ISTART=0 initializes the wavefunctions from scratch.
+- NELM sets the maximum number of electronic minimization steps. When wavefunctions are initialized from scratch or require further optimization, allow enough iterations to reach the EDIFF convergence criterion. Single-step electronic runs are appropriate only for compatible post-processing workflows that reuse already-converged wavefunctions.
+- Reusing a charge density does not by itself guarantee that compatible converged wavefunctions are available. Allow sufficient electronic minimization unless the request explicitly confirms that a compatible WAVECAR will be reused without further orbital optimization.
+- Choose the electronic-occupancy method based on the system's metallic character, the calculation purpose, and the actual k-point mesh. Brillouin-zone interpolation methods require a sufficiently dense regular mesh that supports the interpolation; for sparse sampling, use an occupation-broadening method that remains valid for individual k-points.
+- Infer the k-point sampling from the cell dimensions and KSPACING; KGAMMA controls mesh centering and does not by itself imply Gamma-only sampling.
+- Include non-spherical contributions to the gradient corrections when accurate total energies or electronic structures are required for systems containing localized d or f electrons.
+- Apply the supplied `qmof_high_spin_initialization` whenever its `applicable` field is true: set ISPIN=2 and copy its MAGMOM string exactly. This is a QMOF-style high-spin initial guess in POSCAR atom order, with MAGMOM=5.0 on every QMOF d-block candidate atom (Sc-Cu, Y-Ag, Lu-Au, Lr-Rg; group 12 excluded), MAGMOM=7.0 on every QMOF f-block candidate atom (La-Yb and Ac-No), and MAGMOM=0.0 on all other atoms.
+- `qmof_high_spin_initialization` is an initial magnetic guess, not a claim about the converged oxidation state, spin state, or magnetic ordering. Explicit user-supplied ISPIN/MAGMOM values or explicit low-spin, antiferromagnetic, non-collinear, spin-orbit, or nonmagnetic instructions take precedence.
+- If `qmof_high_spin_initialization.applicable` is false, do not add spin polarization solely because this default policy exists.
+- Always preserve explicit user constraints. If the simulation request contains a numeric or physical condition, explicitly map it to the corresponding INCAR tag when applicable.
+- Do not omit explicit user constraints just because RAG evidence focuses on different tags. RAG evidence can add missing domain-specific tags, but it must not override or distract from the user's requested values.
 """
 
     if rag_hints and rag_hints.strip():
         prompt += f"""
-RAG_HINTS (optional; may be irrelevant. Use ONLY if clearly applicable; do not overfit):
+LITERATURE_RAG_HINTS (optional; may be irrelevant. Use ONLY if clearly applicable; do not overfit):
 {rag_hints.strip()}
+"""
+
+    if manual_hints and manual_hints.strip():
+        prompt += f"""
+VASP_MANUAL_RAG_HINTS (official/manual evidence; prefer exact INCAR tag names when applicable):
+{manual_hints.strip()}
 """
 
     if method_paragraph:

@@ -1,0 +1,11 @@
+name: simmof-mofstructure-analysis
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy==1.26.4
+      - pandas==2.2.3
+      - contourpy==1.2.1
+      - mofstructure[rdkit]==0.1.8.7

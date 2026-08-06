@@ -5,11 +5,13 @@ from typing import Dict, Any
 from config import working_dir, AGENT_LLM_MAP, LLM_DEFAULT
 
 from core.pipeline import make_pipeline_chain
+from core.timing import timed_call
 
 from structure.agent import LAMMPSStructureAgent
 from input.lammps_input import LAMMPSInputAgent
 from LAMMPS.runner import LAMMPSRunner
 from error.lammps_error import LAMMPSErrorAgent
+from error.structure_regeneration import StructureRegenerationCoordinator
 from output.lammps_output import LAMMPSOutputAgent
 
 
@@ -26,26 +28,44 @@ class LAMMPSAgent:
             llm=AGENT_LLM_MAP.get("LAMMPSErrorAgent", self.llm),
             max_lines=200,
         )
+        self.structure_regeneration = StructureRegenerationCoordinator("lammps")
         self.output_agent = LAMMPSOutputAgent()
 
         self.debug_dump = debug_dump
 
         self.chain = make_pipeline_chain(
             steps=[
-                ("ensure_context_defaults", self._ensure_context_defaults),
-                ("LAMMPSAgent_START", self._marker),
-                ("LAMMPSStructureAgent", self.structure_agent.run),
-                ("LAMMPSInputAgent", self.input_agent.run),
-                ("LAMMPSRunner", self.runner_agent.run),
-                ("LAMMPSErrorAgent", self.error_agent.run),
-                ("LAMMPSOutputAgent", self.output_agent.run),
-                ("LAMMPSAgent_END", self._marker),
+                ("ensure_context_defaults", self._timed_step("ensure_context_defaults", self._ensure_context_defaults)),
+                ("LAMMPSAgent_START", self._timed_step("LAMMPSAgent_START", self._marker)),
+                ("LAMMPSStructureAgent", self._timed_step("LAMMPSStructureAgent", self.structure_agent.run)),
+                ("LAMMPSInputAgent", self._timed_step("LAMMPSInputAgent", self.input_agent.run)),
+                ("LAMMPSPreRunReview", self._timed_step("LAMMPSPreRunReview", self.error_agent.pre_run_review)),
+                ("LAMMPSStructureRegenerationPreRun", self._timed_step("LAMMPSStructureRegenerationPreRun", self.structure_regeneration.run)),
+                ("LAMMPSMarkPreRunStructureRegeneration", self._timed_step("LAMMPSMarkPreRunStructureRegeneration", self._mark_pre_run_structure_regeneration)),
+                ("LAMMPSRunner", self._timed_step("LAMMPSRunner", self.runner_agent.run)),
+                ("LAMMPSErrorAgent", self._timed_step("LAMMPSErrorAgent", self.error_agent.run)),
+                ("LAMMPSStructureRegenerationPostError", self._timed_step("LAMMPSStructureRegenerationPostError", self.structure_regeneration.run)),
+                ("LAMMPSRetryAfterStructureRegeneration", self._timed_step("LAMMPSRetryAfterStructureRegeneration", self._retry_after_structure_regeneration)),
+                ("LAMMPSOutputAgent", self._timed_step("LAMMPSOutputAgent", self.output_agent.run)),
+                ("LAMMPSAgent_END", self._timed_step("LAMMPSAgent_END", self._marker)),
             ],
             dump_step=(self._dump_step if self.debug_dump else None),
         )
 
     def _marker(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         return ctx
+
+    def _timed_step(self, step_name: str, fn):
+        def wrapper(ctx: Dict[str, Any]) -> Dict[str, Any]:
+            return timed_call(
+                step_name,
+                fn,
+                ctx,
+                category="lammps_step",
+                context=ctx,
+                extra={"parent_agent": "LAMMPSAgent"},
+            )
+        return wrapper
 
     def _ensure_context_defaults(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
         if not ctx.get("work_dir"):
@@ -55,6 +75,29 @@ class LAMMPSAgent:
             ctx["work_dir"] = wd
 
         ctx.setdefault("results", {})
+        return ctx
+
+    def _mark_pre_run_structure_regeneration(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        attempts = int(ctx.get("structure_regeneration_attempts", 0) or 0)
+        if attempts and ctx.get("lammps_success") is not False:
+            ctx["_lammps_post_error_structure_regen_reruns"] = max(
+                attempts,
+                int(ctx.get("_lammps_post_error_structure_regen_reruns", 0) or 0),
+            )
+        return ctx
+
+    def _retry_after_structure_regeneration(self, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        attempts = int(ctx.get("structure_regeneration_attempts", 0) or 0)
+        already = int(ctx.get("_lammps_post_error_structure_regen_reruns", 0) or 0)
+        if attempts <= already:
+            return ctx
+        if ctx.get("lammps_success") is True:
+            return ctx
+
+        ctx["_lammps_post_error_structure_regen_reruns"] = attempts
+        ctx = self.error_agent.pre_run_review(ctx)
+        ctx = self.runner_agent.run(ctx)
+        ctx = self.error_agent.run(ctx)
         return ctx
 
     def _dump_step(self, ctx: Dict[str, Any], step_agent: str, step_order: int):
@@ -73,3 +116,30 @@ class LAMMPSAgent:
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
         return self.chain.invoke(context)
+
+    def resume(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        ctx = dict(context)
+        ctx.setdefault("results", {})
+        ctx["resume_mode"] = True
+
+        work_dir = Path(ctx.get("work_dir", "")) if ctx.get("work_dir") else None
+        has_marker = bool(work_dir and any((work_dir / name).exists() for name in ("START", "DONE", "FAILED")))
+        has_scheduler = bool(ctx.get("scheduler_job_id"))
+        was_submitted = bool(ctx.get("lammps_submitted"))
+
+        if not (has_marker or has_scheduler or was_submitted):
+            raise RuntimeError(
+                "LAMMPSAgent.resume requires a saved context from or after LAMMPS submission "
+                "(scheduler job id, lammps_submitted flag, or START/DONE/FAILED marker required)."
+            )
+
+        if has_marker or has_scheduler:
+            ctx["lammps_submitted"] = True
+
+        if ctx.get("lammps_success") is not True:
+            ctx = self.error_agent.run(ctx)
+            ctx = self.structure_regeneration.run(ctx)
+            ctx = self._retry_after_structure_regeneration(ctx)
+
+        ctx = self.output_agent.run(ctx)
+        return ctx

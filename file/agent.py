@@ -1,4 +1,6 @@
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import ase.io
@@ -6,9 +8,7 @@ import ase.io.vasp
 import numpy as np
 
 from config import VASP_EXECUTABLE, VASP_POTENTIAL_DIR_PATH
-
-VASP_QSUB_QUEUE = "long"
-VASP_QSUB_RESOURCES = "nodes=2:ppn=16:aa"
+from core.resource_allocator import ResourceSpec
 
 
 class VASPFileAgent:
@@ -23,22 +23,24 @@ class VASPFileAgent:
         return out_dir, label
 
     @classmethod
-    def get_vasp_file(cls, cif_path=None):
+    def get_vasp_file(cls, cif_path=None, spec: ResourceSpec = None):
         pot_dir = str(VASP_POTENTIAL_DIR_PATH) + '/'
         out_dir, label = cls.get_pathdata(cif_path)
         atoms = ase.io.read(cif_path)
         cls.atoms_to_poscar(atoms, out_dir)
         cls.atoms_to_potcar(atoms, out_dir, pot_dir)
-        cls.make_qsub(out_dir, label)
+        cls.make_qsub(out_dir, label, spec=spec)
         return
 
     @classmethod
-    def make_qsub(cls, out_dir, label):
+    def make_qsub(cls, out_dir, label, spec: ResourceSpec = None):
+        if spec is None:
+            raise ValueError("VASPFileAgent.make_qsub requires a prompt-derived ResourceSpec.")
         with open(out_dir + label + '.qsub', 'w') as f:
             print("#!/bin/sh", file=f)
             print("#PBS -r n", file=f)
-            print(f"#PBS -q {VASP_QSUB_QUEUE}", file=f)
-            print(f"#PBS -l {VASP_QSUB_RESOURCES}", file=f)
+            print(f"#PBS -q {spec.queue}", file=f)
+            print(f"#PBS -l {spec.pbs_nodes_string()}", file=f)
             print(f"#PBS -e {out_dir}{label}.pbs.err", file=f)
             print(f"#PBS -o {out_dir}{label}.pbs.out", file=f)
             print("", file=f)
@@ -76,10 +78,11 @@ class VASPFileAgent:
     @classmethod
     def atoms_to_potcar(cls, atoms, out_dir, pot_dir):
         species = sorted(set(atoms.get_chemical_symbols()))
+        return cls.species_to_potcar(species, out_dir, pot_dir)
 
-        with open(out_dir + 'POTCAR', 'w'):
-            pass
-
+    @classmethod
+    def species_to_potcar(cls, species, out_dir, pot_dir):
+        source_paths = []
         for s in species:
             path = os.path.abspath(os.path.join(pot_dir, s))
             ds = ['In', 'Ga', 'Ge', 'Sn', 'Tl', 'Pb', 'Bi', 'Po', 'At']
@@ -95,9 +98,28 @@ class VASPFileAgent:
 
             potcar_file = os.path.join(path, 'POTCAR')
             if os.path.exists(potcar_file):
-                os.system(f"cat {potcar_file} >> {out_dir + 'POTCAR'}")
+                source_paths.append(potcar_file)
             else:
                 raise IOError(f"[CIF2VASP] No pseudo potential file.. {potcar_file}")
+
+        output_path = os.path.join(out_dir, "POTCAR")
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=out_dir,
+                prefix=".POTCAR.simmof.",
+                delete=False,
+            ) as output:
+                temporary_path = output.name
+                for source_path in source_paths:
+                    with open(source_path, "rb") as source:
+                        shutil.copyfileobj(source, output)
+            os.replace(temporary_path, output_path)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        return source_paths
 
     @classmethod
     def atoms_to_min_kpoints(cls, atoms, out_dir, label):

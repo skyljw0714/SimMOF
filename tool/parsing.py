@@ -36,7 +36,7 @@ Return JSON ONLY. No markdown. No commentary.
 Schema (include all keys; use null when not applicable):
 
 {
-  "tool": "zeo++|ASE_atom_count|RASPA_henry|MLIP_geo|MLIP_be|ASE_atom_type|MOFChecker",
+  "tool": "zeo++|ASE_atom_count|RASPA_henry|MOFTransformer|MLIP_geo|MLIP_be|ASE_atom_type|MOFChecker",
   "mode": "filter|rank",
   "property": "string",
   "op": ">=|<=|>|<|==|!=|TOP",
@@ -52,7 +52,9 @@ Schema (include all keys; use null when not applicable):
   "num_samples": number or null,
 
   "max_atoms": number or null,
-  "atom_type": ["El1","El2"] or null
+  "atom_type": ["El1","El2"] or null,
+
+  "downstream": "string or null"
 }
 
 Important:
@@ -125,8 +127,34 @@ Constraints:
 Output JSON now.
 """
 
+    elif tool in ["moftransformer", "mof_transformer"]:
+        prompt = f"""
+User goal: {goal or "N/A"}
+
+Tool: MOFTransformer
+Step condition text: "{condition_text}"
+
+Constraints:
+- mode="rank", op="TOP"
+- property = the target property being predicted (e.g., "h2_uptake", "bandgap", "co2_uptake")
+- downstream = choose the model key from the table below based on the goal:
+
+  | downstream   | fine-tuned? | use when goal mentions                              |
+  |--------------|-------------|-----------------------------------------------------|
+  | "h2_uptake"  | yes         | H2, hydrogen, hydrogen storage                      |
+  | "bandgap"    | yes         | band gap, electronic, optical, semiconductor        |
+  | "default"    | no (base)   | CO2, N2, void fraction, surface area, pore volume,  |
+  |              |             | or any property NOT listed above                    |
+
+- top_n = the number of candidates to keep (extract from condition text, else null)
+- value = same as top_n
+
+{base_rules}
+Output JSON now.
+"""
+
     elif tool in ["mofchecker"]:
-        
+
         prompt = f"""
 User goal: {goal or "N/A"}
 
@@ -143,6 +171,29 @@ Constraints:
 Output JSON now.
 """
 
+    elif tool in ["mofsimplify", "mof_simplify"]:
+        prompt = f"""
+User goal: {goal or "N/A"}
+
+Tool: MOFSimplify
+Step condition text: "{condition_text}"
+
+Constraints:
+- mode="filter"
+- property="stability"
+- Extract thermal_threshold (°C, float) if mentioned, else null
+- Extract solvent_threshold (0-1, float) if mentioned, else null
+- Return JSON with keys: tool, mode, property, thermal_threshold, solvent_threshold
+
+Examples:
+  "thermal stability > 300°C"          -> thermal_threshold=300.0, solvent_threshold=null
+  "solvent stable (>0.6)"              -> thermal_threshold=null, solvent_threshold=0.6
+  "thermal > 400°C and solvent > 0.5"  -> thermal_threshold=400.0, solvent_threshold=0.5
+  "stable MOFs"                        -> thermal_threshold=null, solvent_threshold=null
+
+Output JSON now (include thermal_threshold and solvent_threshold keys).
+"""
+
     else:
         prompt = f"""
 User goal: {goal or "N/A"}
@@ -154,6 +205,8 @@ Step condition text: "{condition_text}"
 Output JSON now.
 """
 
+    from core.llm_logging import set_llm_context
+    set_llm_context("ToolParsing", "extract_conditions")
     resp = llm.invoke([HumanMessage(content=prompt)])
     data = _safe_json_loads(resp.content)
 
@@ -171,6 +224,7 @@ Output JSON now.
         "num_samples": None,
         "max_atoms": None,
         "atom_type": None,
+        "downstream": None,
     }
     for k, v in defaults.items():
         data.setdefault(k, v)

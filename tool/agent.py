@@ -1,5 +1,4 @@
 import json
-import pandas as pd
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,7 +9,12 @@ from tool.utils import (
     run_ase_atom_count,
     run_zeopp,
     run_raspa_henry,
-    run_mlip_binding
+    run_mlip_binding,
+    run_mlip_geo,
+    run_mlip_complex_candidates,
+    run_moftransformer,
+    run_omd,
+    run_mofsimplify,
 )
 
 from config import SCREENING_WORK_ROOT
@@ -123,6 +127,22 @@ class ToolAgent:
             if tool == "MOFChecker":
                 kept_paths = run_mofchecker(str(current_dir), str(okdir))
 
+            elif tool == "OMD":
+                run_omd(str(current_dir), str(okdir))
+                kept_paths = list(okdir.glob("*.cif"))
+
+            elif tool == "MOFSimplify":
+                _t = params.get("thermal_threshold")
+                _s = params.get("solvent_threshold")
+                thermal_threshold = float(_t) if _t is not None else None
+                solvent_threshold = float(_s) if _s is not None else None
+                kept_paths = run_mofsimplify(
+                    cif_dir=str(current_dir),
+                    okdir=str(okdir),
+                    thermal_threshold=thermal_threshold,
+                    solvent_threshold=solvent_threshold,
+                )
+
             elif tool == "ASE_atom_count":
                 max_atoms = params.get("max_atoms", step.get("max_atoms"))
                 if max_atoms is None:
@@ -163,6 +183,40 @@ class ToolAgent:
                     okdir=str(okdir),
                     molecule=str(molecule),
                     temperature=temperature,
+                    top_n=top_n,
+                )
+
+            elif tool == "MLIP_geo":
+                top_n = int(params.get("top_n", SCREENING_DEFAULT_TOP_N))
+                device = params.get("device", "cpu")
+                kept_paths = run_mlip_geo(
+                    cif_dir=str(current_dir),
+                    okdir=str(okdir),
+                    top_n=top_n,
+                    device=device,
+                )
+
+            elif tool == "MLIP_binding":
+                guest_xyz = params.get("guest_xyz") or context.get("guest_path")
+                if guest_xyz is None:
+                    raise ValueError(f"[ToolAgent] MLIP_binding needs guest_xyz in context or step params. step={step}")
+                top_n = int(params.get("top_n", SCREENING_DEFAULT_TOP_N))
+                device = params.get("device", "cpu")
+                kept_paths = run_mlip_binding(
+                    input_dir=str(current_dir),
+                    guest_xyz=str(guest_xyz),
+                    okdir=str(okdir),
+                    device=device,
+                    top_n=top_n,
+                )
+
+            elif tool == "MOFTransformer":
+                downstream = params.get("downstream") or params.get("property") or "default"
+                top_n = int(params.get("top_n") or SCREENING_DEFAULT_TOP_N)
+                kept_paths = run_moftransformer(
+                    cif_dir=str(current_dir),
+                    okdir=str(okdir),
+                    downstream=downstream,
                     top_n=top_n,
                 )
 
@@ -234,39 +288,22 @@ class ToolAgent:
         if not complex_paths:
             raise RuntimeError("[ToolAgent.mlip] complex_cif_paths is empty.")
 
-        packmol_dir = Path(complex_paths[0]).resolve().parent
-
         local_out = work_dir / "mlip"
         local_out.mkdir(parents=True, exist_ok=True)
 
-        okdir_name = f"ok_{host_cif.stem}_{guest_xyz.stem}"
-        top_n = len(complex_paths)
+        okdir = local_out / f"ok_{host_cif.stem}_{guest_xyz.stem}"
 
-        print(f"[ToolAgent.mlip] run MLIP for {packmol_dir}")
-        csv_path, okdir_path = run_mlip_binding(
-            host_cif=str(host_cif),
-            complex_dir=str(packmol_dir),
-            guest_xyz=str(guest_xyz),
-            okdir=okdir_name,
-            top_n=top_n,
-            local_output_dir=str(local_out),
+        print(f"[ToolAgent.mlip] run MLIP on {len(complex_paths)} complex(es)")
+        result = run_mlip_complex_candidates(
+            complex_cif_paths=complex_paths,
+            okdir=str(okdir),
+            device="cpu",
+            top_n=1,
         )
 
-        print(f"[ToolAgent.mlip] MLIP done. csv={csv_path}, okdir={okdir_path}")
-
-        if not Path(csv_path).exists():
-            raise RuntimeError(f"[ToolAgent.mlip] MLIP result CSV does not exist: {csv_path}")
-
-        df = pd.read_csv(csv_path)
-
-        energy_col = "BindingEnergy(eV)"
-        cif_col = "path"
-
-        best_idx = df[energy_col].idxmin()
-        best_row = df.loc[best_idx]
-
-        best_energy = float(best_row[energy_col])
-        best_cif_path = Path(best_row[cif_col])
+        best = result["best_result"]
+        best_energy = float(best["energy_ev"])
+        best_cif_path = Path(best["relaxed_cif"])
 
         print(f"[ToolAgent.mlip] best = {best_cif_path.name}, E = {best_energy:.4f}")
 
@@ -274,7 +311,6 @@ class ToolAgent:
         context["results"].setdefault("mlip_binding", {})
         context["results"]["mlip_binding"].update(
             {
-                "csv_path": str(csv_path),
                 "best_energy": best_energy,
                 "best_cif": str(best_cif_path),
             }

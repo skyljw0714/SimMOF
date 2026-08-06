@@ -9,9 +9,11 @@ from ase.io import read, write
 from ase.geometry import cellpar_to_cell
 from collections import defaultdict
 from pathlib import Path
-from typing import Union
+from typing import Any, Callable, Dict, Optional, Union
 
-from config import OPENAI_MODEL_LAMMPS, get_openai_client
+from config import LLM_DEFAULT
+from core.llm_logging import log_llm_decision, set_llm_context
+from input.interactive_review import maybe_interactive_review_input_file
 
 def is_orthorhombic(structure, tol=1e-3):
     angles = structure.lattice.angles
@@ -250,46 +252,63 @@ def clean_cif_with_ase(input_cif, output_cif):
     print(f"Cleaned CIF written to: {output_cif}")
 
 ALLOWED_FF = ("UFF", "UFF4MOF", "Dreiding", "BTW_FF", "Dubbeldam")
-def llm_option_from_query(query: str) -> str:
+LAMMPS_FF_DESCRIPTIONS = """Implemented force-field descriptions:
+- UFF: Universal Force Field, a broad-coverage generic force field for molecular and crystalline systems across much of the periodic table.
+- UFF4MOF: MOF-oriented extension of UFF with atom typing and parameters adapted for metal-organic framework environments.
+- Dreiding: generic force field based on simple atom typing and hybridization rules, commonly used as a transferable option for organic and framework atoms.
+- BTW_FF: implemented lammps-interface option for MOF force-field assignment; use only when requested or supported by RAG evidence for the target system.
+- Dubbeldam: lammps-interface option associated with published MOF-specific parameterizations developed to represent framework flexibility, adsorption, diffusion, or structural response. Do not infer applicability from a MOF name alone; use this option only when the user explicitly requests it or when RAG evidence identifies that the target belongs to a framework family with a transferable Dubbeldam-type parameterization for the intended task.
+"""
+def llm_option_from_query(query: str, rag_hints: str = "") -> str:
     prompt = f"""You are configuring 'lammps-interface' for a MOF simulation.
 
 Return ONLY ONE line with the exact option string (no code block, no extra words):
 - Must start with: -ff <FORCE_FIELD>
 - Allowed FORCE_FIELD: {', '.join(ALLOWED_FF)}
+- First use the user query and RAG hints. If these are not actionable, use the descriptions below as conservative internal-library guidance rather than literature evidence.
+{LAMMPS_FF_DESCRIPTIONS}
 - Optional flags (space-separated, any order, zero or more):
-  --fix-metal
-  --h-bonding
-  --dreid-bond-type morse
+  --fix-metal        (constrain metal atoms during relaxation)
+  --h-bonding        (enable explicit hydrogen-bond terms; only available with Dreiding)
+  --dreid-bond-type morse  (use Morse potential for bonds instead of harmonic; only with Dreiding)
 - Do NOT include CIF filename or any other flags.
 - Output must be a single line, nothing else.
 
-IMPORTANT force-field selection rules (do not print):
-1) Dubbeldam force field is ONLY intended for IRMOF / MOF-5 family where the SBU/linker pattern matches.
-   - Use '-ff Dubbeldam' ONLY if the user explicitly mentions IRMOF, IRMOF-1, MOF-5 (MOF5), or clearly indicates IRMOF family.
-   - If the MOF is UiO-66 (or UiO series), HKUST-1, MIL-*, ZIF-*, NU-*, PCN-*, NOT IRMOF: do NOT choose Dubbeldam.
-
-2) For thermal expansion / CTE / NPT temperature scan of general MOFs (e.g., UiO-66), default to:
-   - '-ff UFF4MOF'
-   Rationale: broad MOF coverage and avoids SBU-detection requirement.
-
-3) Generic MOF adsorption/diffusion (when MOF family is not IRMOF):
-   - Prefer '-ff UFF4MOF'
-
-4) Hydrogen-bond networks on organics (if user explicitly mentions H-bonding):
-   - Use '-ff Dreiding --h-bonding' (optionally add '--dreid-bond-type morse' if needed)
-
-5) '--fix-metal' is only meaningful with UFF or Dreiding. Use it only if user requests metal constraints.
-
 User query:
 {query}
+
+RAG hints from literature:
+{rag_hints}
 """
 
-    resp = get_openai_client().chat.completions.create(
-        model=OPENAI_MODEL_LAMMPS,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    option = resp.choices[0].message.content.strip()
+    from langchain.schema import HumanMessage
+    from config import ask_user_confirmation
+    set_llm_context("LAMMPSInputAgent", "lammps_interface_option")
+    resp = LLM_DEFAULT.invoke([HumanMessage(content=prompt)])
+    option = resp.content.strip()
+    print(f"[LAMMPSMofFF] LLM selected: {option}")
 
+    def _reinvoke(instruction: str) -> str:
+        revised_prompt = prompt + f"\n\nUser instruction: {instruction}\nRevise your selection accordingly."
+        set_llm_context("LAMMPSInputAgent", "lammps_interface_option_revision")
+        r = LLM_DEFAULT.invoke([HumanMessage(content=revised_prompt)])
+        return r.content.strip()
+
+    action, revised = ask_user_confirmation(
+        "LAMMPSMofFF",
+        f"Proposed MOF FF option: {option}",
+        reinvoke_fn=_reinvoke,
+        required=True,
+    )
+    if action == "apply" and revised != f"Proposed MOF FF option: {option}":
+        print(f"[LAMMPSMofFF] Updated per user instruction: {revised}")
+        option = revised
+
+    try:
+        log_llm_decision("LAMMPSInputAgent", "lammps_interface_option",
+                         {"option": option, "query": query[:500]})
+    except Exception:
+        pass
     return option
 
 
@@ -392,7 +411,7 @@ def update_settings_with_style(lt_path, settings_path, hybrid_keys, output_path)
 
 
 
-PROMPT_DIFFUSIVITY = """
+LEGACY_PROMPT_DIFFUSIVITY = """
 You are an expert in writing LAMMPS input scripts.
 
 Your task is to generate the **Run Section** of a `system.in` file
@@ -408,78 +427,70 @@ The Run Section must follow this structure:
 
 1) Group and basic settings
 - Re-declare the group definitions.
-- Initialize velocities for the guest group with:
-  * `velocity guest create <temperature> <seed> mom yes rot yes dist gaussian`
 - Define neighbor and neigh_modify settings.
-  * Exclude MOF-MOF interactions with `neigh_modify exclude group MOF MOF`
 - Define a default timestep, e.g. `timestep 1.0`.
-- Define a dump for trajectory output using unwrapped coordinates.
-- IMPORTANT: the dump MUST include molecule IDs so that molecular center-of-mass MSD can be computed in post-processing.
-- Use a trajectory dump of the form:
-  * `dump traj all custom 1000 traj.lammpstrj id mol type xu yu zu`
 - Set thermo output:
   * e.g. `thermo 1000`
-  * e.g. `thermo_style custom step temp etotal press`
+  * e.g. `thermo_style custom step time temp pe etotal`
+  * include at least one energy column (`etotal` or `pe`) so energy autocorrelation can be post-processed.
 
-2) Preparation before dynamics
-- Freeze the MOF atoms:
+2) Preparation before dynamics (ORDER IS CRITICAL)
+- FIRST freeze the MOF atoms and zero its velocities — BEFORE minimize:
   * `fix freezeMOF MOF setforce 0.0 0.0 0.0`
-- Reset image flags:
-  * `set atom * image 0 0 0`
-- Perform a short energy minimization:
-  * `minimize 1.0e-4 1.0e-6 1000 10000`
+  * `velocity MOF set 0.0 0.0 0.0`
+- THEN perform energy minimization:
+  * `min_style cg`
+  * `minimize 1.0e-6 1.0e-8 1000 10000`
+- Do NOT use `set group MOF image 0 0 0` — this corrupts image flags for bonds crossing periodic boundaries.
 - IMPORTANT: Do NOT define or modify `kspace_style` in this Run Section.
   Assume long-range electrostatics (if any) are already configured elsewhere.
 
-3) Equilibration with Langevin (two stages)
-- Apply `fix nve` to the guest group:
-  * e.g. `fix nve_guest guest nve`
-- Apply a Langevin thermostat to the guest group:
-  * e.g. `fix langevin_guest guest langevin <Tstart> <Tstop> 100.0 <seed>`
-- First equilibration run:
-  * `run 5000`
-- Second equilibration run with smaller timestep:
-  * `timestep 0.5`
-  * `run 5000`
+3) Equilibration with Langevin thermostat
+- Initialize guest velocities. Consider whether removing net momentum/rotation from
+  the initial velocity distribution is appropriate given the number of guest molecules.
+- Choose a molecular constraint and thermostat scheme appropriate to the guest model:
+  consider whether the guest has intramolecular degrees of freedom that need constraining,
+  whether the chosen constraint algorithm is numerically stable for the molecule's
+  equilibrium geometry, and whether thermostat coupling is compatible with the chosen
+  constraint method.
+- Equilibrate long enough for guest kinetic energy to reach target temperature.
 
-4) Short NVE warm-up without thermostat
-- Remove the Langevin thermostat:
-  * `unfix langevin_guest`
-- Restore the production timestep (e.g. `timestep 1.0`)
-- Run a short NVE warm-up:
-  * e.g. `run 10000`
-
-5) MSD-related output and long production run
-- IMPORTANT:
-  The target property is the diffusivity of whole guest molecules, i.e. molecular center-of-mass diffusion.
-- Therefore, the trajectory dump with `mol` and unwrapped coordinates is REQUIRED for post-processing of molecular COM MSD.
-- If you include a LAMMPS `compute msd` command, it is ONLY a supplementary atomic/group MSD output.
-- If `compute msd` is included:
-  * use `compute msd_guest guest msd`
-  * DO NOT use `com yes`
-  * DO NOT use any option that subtracts the center-of-mass drift of the whole guest group
-- If `fix ave/time` is used for MSD output, it should write `c_msd_guest[4]` to `msd_guest.dat`.
-- Run a long NVE production to accumulate trajectory/MSD data:
-  * prefer multi-nanosecond production, e.g. `run 5000000` or longer
+4) Production run
+- For diffusivity measurement, consider carefully which ensemble and thermostat scheme
+  allow unbiased guest transport. Think about whether any coupling terms in the chosen
+  dynamics introduce a systematic force that acts on molecular motion.
+- Reset timestep before production.
+- Define trajectory dump (REQUIRED for post-processing molecular COM MSD):
+  * `dump traj guest custom 1000 traj.lammpstrj id mol type xu yu zu`
+  * `dump_modify traj sort id`
+- For in-LAMMPS molecular COM MSD, use chunk-based compute:
+  * `compute guestChunk guest chunk/atom molecule nchunk once ids once compress yes`
+  * `compute msd_guest guest msd/chunk guestChunk`
+  * `fix avgmsd all ave/time 1000 1 1000 c_msd_guest[*] file msd_guest.dat mode vector`
+- Run long production (multi-nanosecond), then clean up fixes/computes/dumps.
 
 Do NOT include:
 - NPT or NVT ensembles (no `fix npt`, `fix nvt`)
-- SHAKE constraints
 - `fix momentum` or similar momentum-removal fixes
+- `set group MOF image 0 0 0` or `set atom * image 0 0 0`
+- `compute msd ... com yes` — think about what this option removes from the measurement
+- `compute msd/molecule` — does not exist in LAMMPS 3 Mar 2020; use `msd/chunk` instead
 - Any `kspace_style` commands (assume they are defined in other sections)
 
 CRITICAL DIFFUSIVITY RULES:
-- The scientifically relevant diffusivity is based on the center of mass of each guest molecule, not on individual guest atoms.
-- The Run Section must therefore preserve all information needed for post-processing molecular COM MSD:
-  * include `mol` in the trajectory dump
-  * include unwrapped coordinates `xu yu zu`
-- Do NOT attempt to approximate molecular diffusivity by subtracting the center of mass of the entire guest group.
-- Never use `compute msd ... com yes` for the guest group in this task.
-- If only a simple in-LAMMPS MSD is included, it must be clearly just the plain guest-group MSD via `compute msd_guest guest msd`, while the molecular COM diffusivity is intended to be computed later from the dumped trajectory.
+- The scientifically relevant diffusivity is based on the center of mass of each guest molecule.
+- Before choosing any constraint algorithm for molecular bonds/angles, verify that the
+  algorithm's iterative equations are well-defined for the molecule's equilibrium geometry.
+- Before choosing a thermostat for the production run, consider whether that thermostat
+  introduces any non-conservative forces that could bias molecular transport.
+- MSD must be computed per molecule (center-of-mass), not per atom and not by subtracting
+  the COM of the entire guest group. Use `compute msd/chunk` with `chunk/atom molecule`.
+- `compute msd ... com yes` subtracts the drift of the entire group — reason carefully about
+  whether this is appropriate when you want to measure that drift as diffusion.
 
 IMPORTANT:
 If simulation_description contains "JOB_NAME=..._<TEMP>K" (e.g., _200K, _300K, _400K),
-you MUST use that <TEMP> as the ONLY temperature for both `velocity guest create` and `fix langevin`.
+you MUST use that <TEMP> as the ONLY temperature for both `velocity guest create` and Langevin.
 Ignore any other temperatures mentioned elsewhere and do NOT create temperature loops.
 
 Use the following simulation description to adapt the script:
@@ -498,58 +509,8 @@ Rules for using RAG notes:
 Return only the Run Section code (no explanations, no markdown).
 """
 
-PROMPT_GENERIC = """
-    You are an expert in writing LAMMPS input scripts.
 
-    Your task is to generate a `system.in` file for a LAMMPS simulation using the following input information.
-
-    The system.in file should contain:
-    - The **group definitions are already provided** and must be used as-is:
-    {group_definitions}
-    - Velocity creation
-    - Time step definition
-    - Dump output settings
-    - Thermo output settings
-    - Fix commands for freezing MOF atoms, shaking water molecules, and NPT integration
-    - A `minimize` command
-    - A `run` command
-
-    Example format:
-    group mof type 1:6
-    group w subtract all mof
-
-    velocity       all create 300  12345
-    timestep       1.0
-    dump my_dump all atom 1 dump.lammpstrj
-    thermo 1
-    # Constraint ##################################
-    fix freeze     mof setforce 0.0 0.0 0.0
-    minimize 1.0e-5 1.0e-7 1000 10000
-    unfix freeze
-
-    fix com        w momentum 100 linear 1 1 1
-    fix rigid      w shake 1e-4 20 0 b 1 a 1
-    fix   fxnpt all npt temp 300.0 300.0 100.0 iso 1.0 1.0 1000.0 drag 1.0
-    run 1000
-
-    Generate a valid LAMMPS system.in file based on this format.
-    Return only the content of system.in (no explanation).
-
-    Simulation description:
-    {simulation_description}
-
-    --------------------------------
-    Optional RAG notes (may be irrelevant):
-    {rag_summaries}
-
-    Rules for using RAG notes:
-    - Use RAG only if it contains directly relevant LAMMPS run-section guidance.
-    - Do NOT follow RAG if it conflicts with the required structure and "Do NOT include" rules.
-    - Ignore experimental characterization content (XPS, FTIR, adsorption isotherms, etc.).
-    --------------------------------
-    """
-
-PROMPT_THERMAL_EXPANSION = """
+LEGACY_PROMPT_THERMAL_EXPANSION = """
 You are an expert in writing LAMMPS input scripts.
 
 Your task is to generate the **Run Section only** (LAMMPS commands, no headers)
@@ -667,7 +628,7 @@ Rules for using RAG notes:
 Return ONLY the LAMMPS Run Section commands.
 """
 
-PROMPT_RDF_MOF_GUEST = """
+LEGACY_PROMPT_RDF_MOF_GUEST = """
 You are an expert in writing LAMMPS input scripts.
 
 Your task is to generate the **Run Section** of a `system.in` file
@@ -700,11 +661,10 @@ REQUIREMENTS (MUST FOLLOW EXACTLY)
   thermo_style custom step temp press etotal vol
 
 2) Preparation before dynamics
-- Reset image flags:
-  set atom * image 0 0 0
 - Energy minimization:
   min_style cg
   minimize 1.0e-6 1.0e-8 1000 10000
+- Do NOT reset image flags (`set group MOF image 0 0 0` or `set atom * image 0 0 0`).
 - IMPORTANT: Do NOT define or modify kspace_style or pair_style in this Run Section.
 
 3) Equilibration with NVT (short)
@@ -775,7 +735,7 @@ Rules for using RAG notes:
 Return only the Run Section code (no markdown).
 """
 
-PROMPT_INTERACTION_ENERGY_MOF_GUEST = """
+LEGACY_PROMPT_INTERACTION_ENERGY_MOF_GUEST = """
 You are an expert in writing LAMMPS input scripts.
 
 Your task is to generate the **Run Section** of a `system.in` file
@@ -809,11 +769,10 @@ REQUIREMENTS (MUST FOLLOW EXACTLY)
   thermo_style custom step temp press etotal vol
 
 2) Preparation before dynamics
-- Reset image flags:
-  set atom * image 0 0 0
 - Energy minimization:
   min_style cg
   minimize 1.0e-6 1.0e-8 1000 10000
+- Do NOT reset image flags (`set group MOF image 0 0 0` or `set atom * image 0 0 0`).
 - IMPORTANT: Do NOT define or modify kspace_style or pair_style in this Run Section.
 
 3) Equilibration (simple NVT)
@@ -873,7 +832,7 @@ Rules for using RAG notes:
 Return only the Run Section code (no markdown).
 """
 
-PROMPT_YOUNGS_MODULUS = """
+LEGACY_PROMPT_YOUNGS_MODULUS = """
 You are an expert in writing LAMMPS input scripts.
 
 Your task is to generate the **Run Section only** (LAMMPS commands, no headers)
@@ -896,16 +855,17 @@ thermo 1000
 thermo_style custom step temp press pxx pyy pzz pe etotal vol lx ly lz
 
 2) Preparation
-set atom * image 0 0 0
 min_style cg
+fix initial_relax all box/relax aniso 0.0 vmax 0.001
 minimize 1.0e-8 1.0e-10 5000 50000
+unfix initial_relax
 
 3) Quasi-static uniaxial strain (x direction)
 - Define variables:
   variable emax equal 0.005
   variable nstep equal 10
   variable de equal v_emax/v_nstep
-  variable Lx0 equal lx
+  variable Lx0 equal $(lx)
 
 - Write header line once:
   print "i strain stress" file youngs_stress_strain.dat
@@ -917,7 +877,9 @@ minimize 1.0e-8 1.0e-10 5000 50000
   variable scale equal 1.0+v_de
   change_box all x scale v_scale remap
 
+  fix lateral_relax all box/relax y 0.0 z 0.0 vmax 0.001
   minimize 1.0e-8 1.0e-10 5000 50000
+  unfix lateral_relax
 
   variable strain equal (lx - v_Lx0)/v_Lx0
   variable stress equal -pxx
@@ -931,6 +893,7 @@ ABSOLUTELY DO NOT INCLUDE:
 - any run command for MD dynamics
 - any group commands
 - any kspace_style / pair_style
+- set atom * image 0 0 0 or set group * image 0 0 0
 
 Simulation description:
 {simulation_description}
@@ -972,6 +935,331 @@ Simulation description (context only):
 Return ONLY the Run Section commands (no markdown, no headers, no explanation).
 """
 
+PROMPT_UNIFIED_RUNSECTION = """
+You are an expert in writing LAMMPS input scripts.
+
+Task:
+Generate ONLY the Run Section commands to append to an existing `system.in`.
+Earlier sections already define atom styles, force-field coefficients, `read_data`,
+`pair_style`, and `kspace_style` when needed.
+
+================================================================
+COMMON RULES (ALWAYS FOLLOW)
+================================================================
+- Output ONLY valid LAMMPS commands. No markdown, comments, headers, or prose.
+- Do NOT define or modify `pair_style`, `pair_coeff`, `kspace_style`, or force-field coefficients.
+- Re-declare the provided group definitions EXACTLY when they are non-empty.
+- Do not invent new group names.
+- Use 300 K unless simulation_description contains `JOB_NAME=..._<TEMP>K`
+  such as `_200K`, `_300K`, or `_400K`; if present, use that temperature only.
+- Use conservative defaults unless the user explicitly specifies numeric settings:
+  neighbor 2.0 bin; neigh_modify delay 0 every 1 check yes; timestep 1.0; thermo 1000.
+- Include `thermo_style custom` with fields relevant to the requested property.
+- Do NOT use `set group MOF image 0 0 0` or `set atom * image 0 0 0` — resetting image flags corrupts bonds that cross periodic boundaries and causes incorrect rigid body geometry. Omit image flag resets entirely.
+- Prefer `min_style cg` and a short `minimize` before production dynamics unless the task is pure reproduction.
+- If trajectory output is useful, include molecule id and unwrapped coordinates:
+  `dump ... custom ... id mol type xu yu zu`.
+- Use RAG/official command evidence for exact command syntax.
+- If RAG evidence conflicts with COMMON RULES, follow COMMON RULES.
+
+================================================================
+GROUP DEFINITIONS
+================================================================
+{group_definitions}
+
+================================================================
+SIMULATION DESCRIPTION
+================================================================
+{simulation_description}
+
+================================================================
+OFFICIAL LAMMPS COMMAND EVIDENCE
+================================================================
+{official_command_hints}
+
+================================================================
+OPTIONAL INTERNAL / LITERATURE RAG NOTES
+================================================================
+{rag_summaries}
+
+Return ONLY the Run Section commands.
+"""
+
+
+def _format_lines(values):
+    if not values:
+        return "- none"
+    return "\n".join(f"- {value}" for value in values)
+
+
+def infer_lammps_run_task_profile(property: str):
+    return {
+        "intent": (
+            f"Generate the requested LAMMPS Run Section for {property or 'the user objective'} "
+            "using system capabilities and retrieved official evidence."
+        ),
+        "required_commands": [],
+        "run_logic": [
+            "Include only preparation required by the requested calculation.",
+            "Define the requested observable before any command consumes it.",
+            "Expose the observable through the requested output.",
+            "Run or minimize only when required to produce that output.",
+            "Clean up only IDs created by this Run Section.",
+        ],
+        "forbidden_commands": [
+            "Do not redefine the simulation box, atoms, or force field.",
+            "Do not use unavailable groups or per-atom fields.",
+            "Do not add an ensemble, thermostat, minimization, or trajectory by default.",
+        ],
+        "expected_outputs": [
+            "The property signal or file explicitly requested by the user.",
+        ],
+        "optional_postprocessing_analyses": [],
+    }
+
+
+def _legacy_infer_lammps_run_task_profile(property: str):
+    prop = (property or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+    if (
+        ("diffus" in prop)
+        or (prop in {"msd", "mean_squared_displacement", "self_diffusion_coefficient"})
+    ):
+        return {
+            "intent": "Compute guest diffusivity from molecular center-of-mass motion in a MOF.",
+            "required_commands": [
+                "velocity (no mom yes rot yes)",
+                "neighbor",
+                "neigh_modify",
+                "timestep",
+                "fix freezeMOF MOF setforce 0.0 0.0 0.0 (BEFORE minimize)",
+                "velocity MOF set 0.0 0.0 0.0 (BEFORE minimize)",
+                "minimize",
+                "fix rigid/small molecule langevin (equilibration)",
+                "unfix (remove Langevin fix before production)",
+                "fix rigid/small molecule (NVE production, no thermostat)",
+                "dump id mol type xu yu zu",
+                "dump_modify",
+                "compute chunk/atom molecule",
+                "compute msd/chunk",
+                "fix ave/time ... c_msd_guest[*] file msd_guest.dat mode vector",
+                "run",
+                "unfix",
+                "uncompute",
+                "undump",
+            ],
+            "run_logic": [
+                "Use the provided MOF and guest groups.",
+                "CRITICAL ORDER: framework freeze fix and velocity zeroing must be declared BEFORE minimize. Fixes declared after minimize have no effect on minimization.",
+                "Do NOT use `set group MOF image 0 0 0` — image flags encode which periodic image each atom is in; resetting them without recomputing from bond topology corrupts bonded geometry.",
+                "When initializing guest velocities, consider whether removing net momentum or angular momentum from the distribution is appropriate given the number of guest molecules present.",
+                "Choose the molecular constraint method by reasoning about the guest model: does it have intramolecular DOF to constrain? Is the chosen constraint algorithm numerically stable for that molecule's equilibrium geometry? Is the algorithm compatible with the chosen integrator?",
+                "Choose the production ensemble by reasoning about what forces act on guest molecules: does the chosen thermostat/barostat introduce any systematic coupling that could bias transport coefficients?",
+                "Equilibration and production should use different setups if the equilibration thermostat introduces forces incompatible with unbiased diffusivity measurement.",
+                "Dump `id mol type xu yu zu` so molecular COM MSD can be post-processed.",
+                "For in-LAMMPS MSD: use `compute chunk/atom molecule` + `compute msd/chunk` to compute per-molecule COM MSD. Use `fix ave/time 1000 1 1000 c_msd_guest[*] file msd_guest.dat mode vector`.",
+                "Include a thermo energy column such as `etotal` or `pe` so energy autocorrelation can be post-processed.",
+                "Run a long production, e.g. `run 5000000`.",
+            ],
+            "forbidden_commands": [
+                "Do not use `compute msd ... com yes` — reason carefully: this option subtracts the drift of the entire guest group, which is the quantity you are trying to measure.",
+                "Do not use `compute msd/molecule` — does not exist in LAMMPS 3 Mar 2020; use `msd/chunk` instead.",
+                "Do not use `set group MOF image 0 0 0` or `set atom * image 0 0 0`.",
+                "Do not use `fix momentum` or global center-of-mass removal for diffusivity.",
+                "Do not use `fix npt` or `fix nvt` for the production diffusivity run.",
+                "Do not define `kspace_style` in the Run Section.",
+            ],
+            "expected_outputs": ["traj.lammpstrj", "log.lammps/thermo energy output", "msd_guest.dat"],
+            "optional_postprocessing_analyses": [
+                "anisotropic_diffusion",
+                "van_hove_non_gaussian",
+                "velocity_autocorrelation",
+                "energy_autocorrelation",
+                "rdf_guest_host_contact",
+                "residence_hopping",
+                "node_linker_contact",
+                "pore_network_hopping_graph",
+                "diffusion_activation_barrier for multi-temperature runs",
+            ],
+        }
+
+    if ("thermal_expansion" in prop) or ("cte" in prop):
+        return {
+            "intent": "Compute temperature-dependent cell dimensions/volume for MOF thermal expansion.",
+            "required_commands": [
+                "variable",
+                "velocity",
+                "neighbor",
+                "neigh_modify",
+                "thermo",
+                "thermo_style",
+                "min_style",
+                "minimize",
+                "fix npt",
+                "fix ave/time",
+                "run",
+                "print",
+                "next",
+                "jump",
+                "unfix",
+            ],
+            "run_logic": [
+                "Apply dynamics to `all` atoms; do not define groups.",
+                "Define equal-style variables for vol/lx/ly/lz, then average `v_vVol v_vLx v_vLy v_vLz` with `fix ave/time`.",
+                "Loop over temperatures 200 250 300 350 400 K unless the query provides a different scan.",
+                "Use NPT with isotropic pressure coupling and write one averaged file per temperature.",
+                "Append temperature and averaged cell properties to `thermal_expansion_summary.dat`.",
+            ],
+            "forbidden_commands": [
+                "Do not write `fix ave/time ... vol lx ly lz`; use equal-style variables.",
+                "Do not include guest-specific computes.",
+                "Do not freeze the framework.",
+                "Do not define `kspace_style` in the Run Section.",
+            ],
+            "expected_outputs": ["thermal_avg_T${T}.dat", "thermal_expansion_summary.dat"],
+        }
+
+    if ("rdf" in prop) or ("radial_distribution_function" in prop) or (prop == "gr"):
+        return {
+            "intent": "Compute MOF-guest radial distribution functions directly in LAMMPS.",
+            "required_commands": [
+                "velocity",
+                "neighbor",
+                "neigh_modify",
+                "timestep",
+                "thermo",
+                "thermo_style",
+                "min_style",
+                "minimize",
+                "fix nvt",
+                "compute rdf",
+                "fix ave/time",
+                "dump",
+                "dump_modify",
+                "run",
+                "unfix",
+                "undump",
+            ],
+            "run_logic": [
+                "Re-declare the provided group definitions exactly.",
+                "Use type IDs from `group MOF type ...` and `group guest type ...` to build all guest x MOF RDF pairs.",
+                "Define one RDF compute with 200 bins, e.g. `compute rdf_mg all rdf 200 <PAIR_LIST>`.",
+                "Write all RDF outputs with `fix ave/time ... c_rdf_mg[*] file rdf.dat mode vector`.",
+                "Use a short NVT equilibration and a longer NVT production.",
+            ],
+            "forbidden_commands": [
+                "Do not define `pair_style` or `kspace_style` in the Run Section.",
+                "Do not use NPT unless explicitly requested.",
+                "Do not add post-processing instructions.",
+            ],
+            "expected_outputs": ["rdf.dat", "traj_rdf.lammpstrj"],
+        }
+
+    if (
+        ("interaction_energy" in prop)
+        or ("group_group_energy" in prop)
+        or ("ff_interaction_energy" in prop)
+        or ("binding_energy" in prop)
+    ):
+        return {
+            "intent": "Compute force-field MOF-guest interaction energy.",
+            "required_commands": [
+                "velocity",
+                "neighbor",
+                "neigh_modify",
+                "timestep",
+                "thermo",
+                "thermo_style",
+                "min_style",
+                "minimize",
+                "fix nvt",
+                "compute group/group",
+                "fix ave/time",
+                "dump",
+                "dump_modify",
+                "run",
+                "unfix",
+                "undump",
+            ],
+            "run_logic": [
+                "Re-declare the provided group definitions exactly.",
+                "Equilibrate with NVT, then define `compute eint all group/group MOF guest pair yes kspace yes`.",
+                "Average `c_eint` to `interaction_energy.dat` with `fix ave/time`.",
+                "Include a trajectory dump for debugging if useful.",
+            ],
+            "forbidden_commands": [
+                "Do not define `pair_style` or `kspace_style` in the Run Section.",
+                "Do not use NPT unless explicitly requested.",
+                "Do not add post-processing instructions.",
+            ],
+            "expected_outputs": ["interaction_energy.dat", "traj_intE.lammpstrj"],
+        }
+
+    if ("young" in prop) or ("elastic" in prop) or ("modulus" in prop):
+        return {
+            "intent": "Compute Young's modulus of a MOF via quasi-static uniaxial strain and minimization.",
+            "required_commands": [
+                "neighbor",
+                "neigh_modify",
+                "thermo",
+                "thermo_style",
+                "min_style",
+                "minimize",
+                "fix box/relax",
+                "unfix",
+                "variable",
+                "change_box",
+                "print",
+                "next",
+                "jump",
+            ],
+            "run_logic": [
+                "Do not run finite-temperature MD.",
+                "Relax the initial cell at zero pressure with `fix box/relax aniso 0.0`, minimize, and unfix it before recording the reference length.",
+                "Loop over small x-direction strain increments with `change_box all x scale ... remap`.",
+                "Capture the initial x length once with immediate substitution: `variable Lx0 equal $(lx)`. Do not use `variable Lx0 equal lx`, which is re-evaluated after every box change.",
+                "After each x strain increment, relax the lateral y/z dimensions at zero pressure with `fix box/relax y 0.0 z 0.0`, minimize, then unfix.",
+                "Print strain and `-pxx` stress to `youngs_stress_strain.dat`.",
+            ],
+            "forbidden_commands": [
+                "Do not use `fix nvt` or `fix npt`.",
+                "Do not include `run` for MD dynamics.",
+                "Do not define groups.",
+                "Do not define `pair_style` or `kspace_style`.",
+            ],
+            "expected_outputs": ["youngs_stress_strain.dat"],
+        }
+
+    return {
+        "intent": "Generate a conservative generic LAMMPS Run Section for the requested property.",
+        "required_commands": [
+            "velocity",
+            "neighbor",
+            "neigh_modify",
+            "timestep",
+            "thermo",
+            "thermo_style",
+            "min_style",
+            "minimize",
+            "fix nvt",
+            "dump",
+            "dump_modify",
+            "run",
+            "unfix",
+            "undump",
+        ],
+        "run_logic": [
+            "Re-declare provided group definitions exactly when present.",
+            "Initialize velocities, minimize, equilibrate with NVT, write thermo and trajectory output, then run production.",
+            "Use official command evidence to add property-specific computes or fixes only when directly relevant.",
+        ],
+        "forbidden_commands": [
+            "Do not define `pair_style` or `kspace_style` in the Run Section.",
+            "Do not invent force-field coefficients.",
+        ],
+        "expected_outputs": ["log/thermo output", "trajectory dump when useful"],
+    }
+
 
 def generate_system_in(simulation_description: str,
                        group_definition: str,
@@ -979,7 +1267,16 @@ def generate_system_in(simulation_description: str,
                        output_file: str = "system.in",
                        mode: str = "standard",
                        example_text: str = "",
-                       rag_summaries: str = ""):
+                       rag_summaries: str = "",
+                       official_command_hints: str = "",
+                       evidence_plan: dict = None,
+                       evidence_candidates: list = None,
+                       dependency_graph: dict = None,
+                       intent_spec: dict = None,
+                       evidence_provider: Optional[
+                           Callable[[Dict[str, Any]], Dict[str, Any]]
+                       ] = None,
+                       context: dict = None):
 
     if mode == "reproduce":
         prompt_template = PROMPT_REPRODUCE_RUNSECTION
@@ -989,62 +1286,286 @@ def generate_system_in(simulation_description: str,
             example_text=example_text,
         )
     else:
-        prop = (property or "").strip().lower().replace("-", "_").replace(" ", "_")
-
-        if (
-            ("diffus" in prop)
-            or (prop in {"msd", "mean_squared_displacement", "self_diffusion_coefficient"})
-        ):
-            prompt_template = PROMPT_DIFFUSIVITY
-
-        elif (
-            ("thermal_expansion" in prop)
-            or ("cte" in prop)
-        ):
-            prompt_template = PROMPT_THERMAL_EXPANSION
-
-        elif (
-            ("rdf" in prop)
-            or ("radial_distribution_function" in prop)
-            or ("gr" == prop)
-        ):
-            prompt_template = PROMPT_RDF_MOF_GUEST
-
-        elif (
-            ("interaction_energy" in prop)
-            or ("group_group_energy" in prop)
-            or ("ff_interaction_energy" in prop)
-        ):
-            prompt_template = PROMPT_INTERACTION_ENERGY_MOF_GUEST
-
-        elif (
-            ("young" in prop)
-            or ("elastic" in prop)
-            or ("modulus" in prop)
-        ):
-            prompt_template = PROMPT_YOUNGS_MODULUS
-
-        else:
-            prompt_template = PROMPT_GENERIC
-
-        prompt = prompt_template.format(
-            simulation_description=simulation_description,
-            group_definitions=group_definition,
-            rag_summaries=rag_summaries,
+        from input.lammps.dependency_graph import (
+            build_advisory_dependency_graph,
+            validate_lammps_command_dependencies,
+            validate_lammps_intent_coverage,
         )
-        
-    response = get_openai_client().chat.completions.create(
-        model=OPENAI_MODEL_LAMMPS,
-        messages=[
-            {"role": "system", "content": "You are an expert in LAMMPS simulation input generation."},
-            {"role": "user", "content": prompt}
-        ],
-    )
+        from input.lammps.intent import infer_lammps_intent
+        from input.lammps.run_prompt import (
+            build_advisory_revision_prompt,
+            build_scientific_evidence_revision_prompt,
+            build_minimal_runsection_prompt,
+            extract_lammps_run_capabilities,
+        )
+        from input.lammps.scientific_reasoning import (
+            infer_lammps_scientific_plan,
+        )
 
-    generated_code = response.choices[0].message.content.strip()
+        capabilities = extract_lammps_run_capabilities(
+            output_file,
+            group_definition,
+        )
+        if intent_spec is None:
+            set_llm_context("LAMMPSInputAgent", "run_section_intent_planning")
+            intent_spec = infer_lammps_intent(
+                LLM_DEFAULT,
+                simulation_description=simulation_description,
+                property_name=property,
+                capabilities=capabilities,
+            )
+        prompt = build_minimal_runsection_prompt(
+            simulation_description=simulation_description,
+            property_name=property,
+            group_definitions=group_definition,
+            official_command_hints="(none; baseline draft is evidence-free)",
+            rag_summaries="",
+            capabilities=capabilities,
+            intent_spec=intent_spec,
+        )
+        if context is not None:
+            results = context.setdefault("results", {})
+            results["lammps_run_capabilities"] = capabilities
+            results["lammps_intent_spec"] = intent_spec
+
+    from langchain.schema import SystemMessage, HumanMessage
+    set_llm_context(
+        "LAMMPSInputAgent",
+        "run_section_generation"
+        if mode == "reproduce"
+        else "run_section_baseline_generation",
+    )
+    response = LLM_DEFAULT.invoke([
+        SystemMessage(content="You are an expert in LAMMPS simulation input generation."),
+        HumanMessage(content=prompt),
+    ])
+    generated_code = response.content.strip()
+    baseline_code = generated_code
+    validation_errors = []
+    repair_attempts = 0
+    accepted_repairs = 0
+    rejected_repairs = 0
+    retrieval_error = ""
+    scientific_plan = {}
+    scientific_candidate = ""
+    scientific_candidate_errors = []
+    scientific_candidate_applied = False
+    if mode != "reproduce":
+        validation_errors = validate_lammps_intent_coverage(
+            generated_code,
+            intent_spec,
+        )
+        validation_errors.extend(
+            validate_lammps_command_dependencies(
+                generated_code,
+                capabilities=capabilities,
+            )
+        )
+        validation_errors = list(dict.fromkeys(validation_errors))
+        baseline_validation_errors = list(validation_errors)
+
+        if evidence_provider is not None:
+            try:
+                evidence = evidence_provider(intent_spec or {}) or {}
+                official_command_hints = (
+                    evidence.get("formatted_hints") or ""
+                ).strip()
+                evidence_plan = evidence.get("evidence_plan") or {}
+                evidence_candidates = evidence.get("evidence_candidates") or []
+                dependency_graph = evidence.get("dependency_graph") or {}
+                rag_summaries = (
+                    evidence.get("rag_summaries") or rag_summaries or ""
+                ).strip()
+            except Exception as exc:
+                retrieval_error = str(exc)
+                print(
+                    "[RAG] official LAMMPS command hints disabled due to "
+                    f"error: {exc}"
+                )
+
+        if not dependency_graph and evidence_plan:
+            dependency_graph = build_advisory_dependency_graph(evidence_plan)
+        if not evidence_candidates and dependency_graph:
+            evidence_candidates = (
+                dependency_graph.get("candidate_commands") or []
+            )
+
+        max_repair_attempts = max(
+            0,
+            int(os.getenv("SIMMOF_LAMMPS_EVIDENCE_REPAIR_ATTEMPTS", "2")),
+        )
+        has_advisory_evidence = bool(
+            official_command_hints
+            or rag_summaries
+            or evidence_candidates
+            or dependency_graph
+        )
+        scientific_rag_enabled = os.getenv(
+            "SIMMOF_LAMMPS_SCIENTIFIC_RAG",
+            "1",
+        ).strip().lower() not in {"0", "false", "no", "off"}
+        if (
+            has_advisory_evidence
+            and scientific_rag_enabled
+            and repair_attempts < max_repair_attempts
+        ):
+            set_llm_context(
+                "LAMMPSInputAgent",
+                "run_section_scientific_planning",
+            )
+            scientific_plan = infer_lammps_scientific_plan(
+                LLM_DEFAULT,
+                simulation_description=simulation_description,
+                property_name=property,
+                intent_spec=intent_spec or {},
+                capabilities=capabilities,
+                baseline_script=generated_code,
+                official_command_hints=official_command_hints,
+                dependency_graph=dependency_graph or {},
+            )
+            scientific_prompt = build_scientific_evidence_revision_prompt(
+                baseline_prompt=prompt,
+                baseline_script=generated_code,
+                scientific_plan=scientific_plan,
+                official_command_hints=official_command_hints,
+                dependency_graph=dependency_graph or {},
+                baseline_validation_errors=validation_errors,
+            )
+            repair_attempts += 1
+            set_llm_context(
+                "LAMMPSInputAgent",
+                "run_section_scientific_evidence_generation",
+            )
+            response = LLM_DEFAULT.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You generate an executable LAMMPS Run Section by "
+                            "integrating a scientific calculation plan with "
+                            "official command evidence."
+                        )
+                    ),
+                    HumanMessage(content=scientific_prompt),
+                ]
+            )
+            scientific_candidate = response.content.strip()
+            scientific_candidate_errors = validate_lammps_intent_coverage(
+                scientific_candidate,
+                intent_spec,
+            )
+            scientific_candidate_errors.extend(
+                validate_lammps_command_dependencies(
+                    scientific_candidate,
+                    capabilities=capabilities,
+                )
+            )
+            scientific_candidate_errors = list(
+                dict.fromkeys(scientific_candidate_errors)
+            )
+            if len(scientific_candidate_errors) <= len(validation_errors):
+                generated_code = scientific_candidate
+                validation_errors = scientific_candidate_errors
+                accepted_repairs += 1
+                scientific_candidate_applied = True
+            else:
+                rejected_repairs += 1
+
+        while (
+            validation_errors
+            and has_advisory_evidence
+            and repair_attempts < max_repair_attempts
+        ):
+            repair_attempts += 1
+            repair_prompt = build_advisory_revision_prompt(
+                baseline_prompt=prompt,
+                baseline_script=generated_code,
+                intent_spec=intent_spec or {},
+                official_command_hints=official_command_hints,
+                rag_summaries=rag_summaries,
+                dependency_graph=dependency_graph or {},
+                validation_errors=validation_errors,
+            )
+            set_llm_context(
+                "LAMMPSInputAgent",
+                "run_section_advisory_revision",
+            )
+            response = LLM_DEFAULT.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You revise a LAMMPS Run Section using optional "
+                            "official evidence and typed dependency validation."
+                        )
+                    ),
+                    HumanMessage(content=repair_prompt),
+                ]
+            )
+            candidate_code = response.content.strip()
+            candidate_errors = validate_lammps_intent_coverage(
+                candidate_code,
+                intent_spec,
+            )
+            candidate_errors.extend(
+                validate_lammps_command_dependencies(
+                    candidate_code,
+                    capabilities=capabilities,
+                )
+            )
+            candidate_errors = list(dict.fromkeys(candidate_errors))
+            if len(candidate_errors) < len(validation_errors):
+                generated_code = candidate_code
+                validation_errors = candidate_errors
+                accepted_repairs += 1
+            else:
+                rejected_repairs += 1
+                break
+    else:
+        baseline_validation_errors = []
+
+    if context is not None:
+        results = context.setdefault("results", {})
+        results["lammps_run_section_generator"] = (
+            "reproduction_prompt"
+            if mode == "reproduce"
+            else (
+                "intent_draft_then_scientific_evidence_candidate"
+                if evidence_provider is not None
+                else "intent_draft"
+            )
+        )
+        results["lammps_baseline_run_section"] = baseline_code
+        results["lammps_baseline_validation_errors"] = (
+            baseline_validation_errors
+        )
+        results["lammps_evidence_repair_attempted"] = repair_attempts > 0
+        results["lammps_evidence_repair_attempts"] = repair_attempts
+        results["lammps_evidence_application_errors"] = validation_errors
+        results["lammps_advisory_repairs_accepted"] = accepted_repairs
+        results["lammps_advisory_repairs_rejected"] = rejected_repairs
+        results["lammps_advisory_candidates"] = evidence_candidates or []
+        results["lammps_advisory_dependency_graph"] = dependency_graph or {}
+        results["lammps_advisory_rag_summaries"] = rag_summaries
+        results["lammps_advisory_retrieval_error"] = retrieval_error
+        results["lammps_scientific_plan"] = scientific_plan
+        results["lammps_scientific_candidate"] = scientific_candidate
+        results["lammps_scientific_candidate_errors"] = (
+            scientific_candidate_errors
+        )
+        results["lammps_scientific_candidate_applied"] = (
+            scientific_candidate_applied
+        )
 
     with open(output_file, "a") as f:
         f.write("# ----------------- Run Section -----------------\n")
+        if mode != "reproduce" and group_definition.strip():
+            f.write(group_definition.strip() + "\n")
         f.write(generated_code + "\n")
+    maybe_interactive_review_input_file(
+        software="LAMMPS",
+        path=output_file,
+        context=context or {},
+        llm=LLM_DEFAULT,
+        label="LAMMPSInputAgent",
+    )
 
     print(f"system.in generated at {output_file}")

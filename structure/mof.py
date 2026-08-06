@@ -141,7 +141,6 @@ class MOFLoader:
             structure = search_result[0]
 
             crystal = structure.crystal
-            crystal.molecule = crystal.molecule.heaviest_component
 
             with CrystalWriter(save_path / Path(f'./{self.name}.cif')) as writer:
                 writer.write(crystal)
@@ -159,7 +158,6 @@ class MOFLoader:
             structure = search_result[0]
 
             crystal = structure.crystal
-            crystal.molecule = crystal.molecule.heaviest_component
 
             with CrystalWriter(save_path / Path(f'./{self.name}.cif')) as writer:
                 writer.write(crystal)
