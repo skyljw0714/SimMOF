@@ -1,0 +1,34 @@
+{
+  "title": "SimMOF: AI agent for Automated MOF Simulations",
+  "upload_type": "software",
+  "description": "SimMOF is a large language model based multi-agent framework that automates end-to-end metal-organic framework (MOF) simulation workflows from natural language queries. It integrates Zeo++, RASPA, LAMMPS, VASP and Packmol, and handles workflow planning, input generation, job execution, error recovery and result analysis.",
+  "creators": [
+    {
+      "name": "Lee, Jaewoong",
+      "affiliation": "Department of Chemical and Biomolecular Engineering, Korea Advanced Institute of Science and Technology (KAIST)"
+    },
+    {
+      "name": "Bae, Taeun",
+      "affiliation": "Department of Chemical and Biomolecular Engineering, Korea Advanced Institute of Science and Technology (KAIST)"
+    },
+    {
+      "name": "Kim, Jihan",
+      "affiliation": "Department of Chemical and Biomolecular Engineering, Korea Advanced Institute of Science and Technology (KAIST)"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "metal-organic frameworks",
+    "large language models",
+    "multi-agent",
+    "molecular simulation",
+    "automation"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "arXiv:2603.29152",
+      "relation": "isSupplementTo",
+      "scheme": "arxiv"
+    }
+  ]
+}
